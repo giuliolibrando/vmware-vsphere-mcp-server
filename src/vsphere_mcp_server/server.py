@@ -2,6 +2,7 @@
 
 import os
 import re
+from functools import wraps
 from typing import Dict, List
 
 from mcp.server.fastmcp import FastMCP
@@ -24,6 +25,73 @@ def _handle_error(e: Exception, operation: str) -> str:
     if "Connection" in error_msg or "timeout" in error_msg.lower():
         return f"Connection failed for {operation}. Check network connectivity and hostname."
     return f"Error in {operation}: {error_msg}"
+
+
+def _check_tool_enabled(tool_name: str) -> tuple[bool, str]:
+    """Check if a specific tool is enabled (not in DISABLED_TOOLS list).
+
+    Args:
+        tool_name: Name of the tool to check
+
+    Returns:
+        tuple: (enabled: bool, error_message: str)
+    """
+    disabled_tools_str = os.environ.get('DISABLED_TOOLS', '')
+
+    if disabled_tools_str:
+        disabled_list = [t.strip() for t in disabled_tools_str.split(',') if t.strip()]
+
+        if tool_name in disabled_list:
+            return False, (
+                f"⚠️  TOOL DISABLED: {tool_name}\n\n"
+                f"This tool has been disabled via the DISABLED_TOOLS environment variable.\n\n"
+                f"Currently disabled tools:\n"
+                f"  {', '.join(disabled_list)}\n\n"
+                f"To enable this tool, remove '{tool_name}' from the DISABLED_TOOLS list.\n\n"
+                f"Example configurations:\n"
+                f"  - Read-only mode: DISABLED_TOOLS=power_on_vm,power_off_vm,delete_vm,create_vm_snapshot,...\n"
+                f"  - Enable all tools: Remove or leave DISABLED_TOOLS empty"
+            )
+
+    return True, ""
+
+
+def conditional_tool():
+    """Decorator that only registers tool with FastMCP if not disabled.
+
+    Use this decorator for DESTRUCTIVE/MODIFYING operations only:
+    - Power operations (power_on_vm, power_off_vm, force_power_off_vm)
+    - Snapshot operations (create_vm_snapshot, delete_vm_snapshot)
+    - VM deletion (delete_vm, bulk_delete_vms)
+    - Resource modification (modify_vm_resources)
+    - Bulk operations (bulk_power_operations)
+
+    Read-only operations should use @mcp.tool() directly.
+    Tools in DISABLED_TOOLS environment variable will not be registered at all.
+    """
+    def decorator(func):
+        tool_name = func.__name__
+        disabled_tools_str = os.environ.get('DISABLED_TOOLS', '')
+
+        # Debug: Print what we're checking
+        import sys
+        print(f"[DEBUG] Checking tool: {tool_name}", file=sys.stderr)
+        print(f"[DEBUG] DISABLED_TOOLS env: {disabled_tools_str}", file=sys.stderr)
+
+        if disabled_tools_str:
+            disabled_list = [t.strip() for t in disabled_tools_str.split(',') if t.strip()]
+            print(f"[DEBUG] Disabled list: {disabled_list}", file=sys.stderr)
+
+            if tool_name in disabled_list:
+                # Tool is disabled - don't register it, just return the function
+                print(f"[DEBUG] Tool {tool_name} is DISABLED - not registering", file=sys.stderr)
+                return func
+
+        # Tool is enabled - register it with FastMCP
+        print(f"[DEBUG] Tool {tool_name} is ENABLED - registering", file=sys.stderr)
+        return mcp.tool()(func)
+
+    return decorator
 
 
 # VM Management Tools
@@ -128,7 +196,7 @@ def get_vm_details(vm_id: str, hostname: str = None) -> str:
         client.close()
 
 
-@mcp.tool()
+@conditional_tool()
 def power_on_vm(vm_id: str, hostname: str = None) -> str:
     """Power on a virtual machine.
 
@@ -151,7 +219,7 @@ def power_on_vm(vm_id: str, hostname: str = None) -> str:
         client.close()
 
 
-@mcp.tool()
+@conditional_tool()
 def power_off_vm(vm_id: str, hostname: str = None) -> str:
     """Power off a virtual machine.
 
@@ -1117,7 +1185,7 @@ def list_vm_snapshots(vm_id: str, hostname: str = None) -> str:
         client.close()
 
 
-@mcp.tool()
+@conditional_tool()
 def create_vm_snapshot(vm_id: str, snapshot_name: str, description: str = "", hostname: str = None) -> str:
     """Create a snapshot for a specific VM.
 
@@ -1530,7 +1598,7 @@ def get_resource_utilization_summary(hostname: str = None) -> str:
 
 
 # Automation Tools
-@mcp.tool()
+@conditional_tool()
 def bulk_power_operations(operation: str, vm_list: str, hostname: str = None) -> str:
     """Perform bulk power operations on multiple VMs.
 
@@ -1593,7 +1661,7 @@ def bulk_power_operations(operation: str, vm_list: str, hostname: str = None) ->
 
 
 # Destructive Operations with Confirmation
-@mcp.tool()
+@conditional_tool()
 def delete_vm_snapshot(vm_id: str, snapshot_id: str, confirm: bool = False, hostname: str = None) -> str:
     """Delete a snapshot for a specific VM. REQUIRES CONFIRMATION.
 
@@ -1638,7 +1706,7 @@ def delete_vm_snapshot(vm_id: str, snapshot_id: str, confirm: bool = False, host
         client.close()
 
 
-@mcp.tool()
+@conditional_tool()
 def delete_vm(vm_id: str, confirm: bool = False, hostname: str = None) -> str:
     """Delete a virtual machine. REQUIRES CONFIRMATION.
 
@@ -1682,7 +1750,7 @@ def delete_vm(vm_id: str, confirm: bool = False, hostname: str = None) -> str:
         client.close()
 
 
-@mcp.tool()
+@conditional_tool()
 def modify_vm_resources(vm_id: str, cpu_count: int = None, memory_gb: int = None, confirm: bool = False, hostname: str = None) -> str:
     """Modify VM resources (CPU and/or Memory). REQUIRES CONFIRMATION.
 
@@ -1753,7 +1821,7 @@ def modify_vm_resources(vm_id: str, cpu_count: int = None, memory_gb: int = None
         client.close()
 
 
-@mcp.tool()
+@conditional_tool()
 def bulk_delete_vms(vm_list: str, confirm: bool = False, hostname: str = None) -> str:
     """Delete multiple VMs. REQUIRES CONFIRMATION.
 
@@ -1809,7 +1877,7 @@ def bulk_delete_vms(vm_list: str, confirm: bool = False, hostname: str = None) -
         client.close()
 
 
-@mcp.tool()
+@conditional_tool()
 def force_power_off_vm(vm_id: str, confirm: bool = False, hostname: str = None) -> str:
     """Force power off a virtual machine (equivalent to pulling the power cord). REQUIRES CONFIRMATION.
 
@@ -1855,19 +1923,13 @@ def force_power_off_vm(vm_id: str, confirm: bool = False, hostname: str = None) 
 
 def main() -> None:
     """Main entry point for the MCP server."""
-    import os
     from dotenv import load_dotenv
-    
+
     # Load environment variables
     load_dotenv()
-    
-    # Configure FastMCP settings for streamable HTTP transport
-    mcp.settings.host = os.getenv("SERVER_HOST", "0.0.0.0")
-    mcp.settings.port = int(os.getenv("SERVER_PORT", "8000"))
-    mcp.settings.stateless_http = True  # Enable stateless mode
-    
-    # Run with streamable HTTP transport
-    mcp.run(transport="streamable-http")
+
+    # Run the server - FastMCP auto-detects stdio vs http
+    mcp.run()
 
 
 # Export the Starlette/FastAPI app for testing and external use

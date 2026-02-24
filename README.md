@@ -69,6 +69,61 @@ INSECURE=True
 # Server Configuration
 SERVER_HOST=0.0.0.0
 SERVER_PORT=8000
+
+# Tool Access Control (Optional)
+# Disable specific tools by listing them (comma-separated)
+# Leave empty or omit to enable all tools
+DISABLED_TOOLS=
+```
+
+### Disabling Specific Tools
+
+You can disable specific tools by setting the `DISABLED_TOOLS` environment variable with a comma-separated list of tool names. This is useful for creating read-only deployments or restricting access to destructive operations.
+
+**Example: Read-Only Mode (Disable all write operations)**
+```env
+DISABLED_TOOLS=power_on_vm,power_off_vm,force_power_off_vm,create_vm_snapshot,delete_vm_snapshot,delete_vm,modify_vm_resources,bulk_power_operations,bulk_delete_vms
+```
+
+**Example: Disable only destructive operations**
+```env
+DISABLED_TOOLS=delete_vm,delete_vm_snapshot,bulk_delete_vms,force_power_off_vm
+```
+
+**Example: Allow only monitoring (disable all modifications)**
+```env
+DISABLED_TOOLS=power_on_vm,power_off_vm,force_power_off_vm,create_vm_snapshot,delete_vm_snapshot,delete_vm,modify_vm_resources,bulk_power_operations,bulk_delete_vms
+```
+
+**Available write operation tools that can be disabled:**
+- `power_on_vm` - Power on VMs
+- `power_off_vm` - Power off VMs
+- `force_power_off_vm` - Force power off VMs
+- `create_vm_snapshot` - Create snapshots
+- `delete_vm_snapshot` - Delete snapshots
+- `delete_vm` - Delete VMs
+- `modify_vm_resources` - Modify CPU/RAM
+- `bulk_power_operations` - Bulk power operations
+- `bulk_delete_vms` - Bulk delete VMs
+
+### Claude Desktop Integration
+
+When using with Claude Desktop or similar MCP clients, configure the disabled tools via the environment variables:
+
+```json
+{
+  "mcpServers": {
+    "vsphere": {
+      "command": "docker:your-registry.com/vsphere-mcp:latest",
+      "env": {
+        "VCENTER_HOST": "vcenter.company.com",
+        "VCENTER_USER": "user@domain.com",
+        "VCENTER_PASSWORD": "password",
+        "DISABLED_TOOLS": "delete_vm,delete_vm_snapshot,bulk_delete_vms"
+      }
+    }
+  }
+}
 ```
 
 ### AnythingLLM Integration
