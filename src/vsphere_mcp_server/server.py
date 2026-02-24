@@ -73,22 +73,14 @@ def conditional_tool():
         tool_name = func.__name__
         disabled_tools_str = os.environ.get('DISABLED_TOOLS', '')
 
-        # Debug: Print what we're checking
-        import sys
-        print(f"[DEBUG] Checking tool: {tool_name}", file=sys.stderr)
-        print(f"[DEBUG] DISABLED_TOOLS env: {disabled_tools_str}", file=sys.stderr)
-
         if disabled_tools_str:
             disabled_list = [t.strip() for t in disabled_tools_str.split(',') if t.strip()]
-            print(f"[DEBUG] Disabled list: {disabled_list}", file=sys.stderr)
 
             if tool_name in disabled_list:
                 # Tool is disabled - don't register it, just return the function
-                print(f"[DEBUG] Tool {tool_name} is DISABLED - not registering", file=sys.stderr)
                 return func
 
         # Tool is enabled - register it with FastMCP
-        print(f"[DEBUG] Tool {tool_name} is ENABLED - registering", file=sys.stderr)
         return mcp.tool()(func)
 
     return decorator
