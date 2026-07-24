@@ -342,9 +342,10 @@ def list_hosts(
 def get_host_details(hostname: Optional[str] = None, host_id: Optional[str] = None) -> str:
     """Get detailed information about an ESXi host.
 
-    Served by the inventory engine in one bulk fetch: the vSphere
-    Automation REST API has no per-host detail endpoint. Includes
-    hardware, versions, cluster membership, and live quickStats.
+    Served by the inventory engine via bulk PropertyCollector fetches
+    (never per-host calls): the vSphere Automation REST API has no
+    per-host detail endpoint. Includes hardware, versions, cluster
+    membership, and live quickStats.
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
@@ -376,9 +377,8 @@ def get_host_details(hostname: Optional[str] = None, host_id: Optional[str] = No
         matches = [r for r in rows
                    if (r.get("name") or "").lower() == host_id.lower()]
     if not matches:
-        known = ", ".join(f"{r.get('name')} ({r.get('host_id')})"
-                          for r in rows)
-        return f"ESXi host '{host_id}' not found. Known hosts: {known}"
+        return (f"ESXi host '{host_id}' not found among {len(rows)} known "
+                f"hosts. Use list_hosts to look up host names and IDs.")
     if len(matches) > 1:
         ids = ", ".join(str(r.get("host_id")) for r in matches)
         return f"Host name '{host_id}' is ambiguous ({ids}); use the ID."
@@ -1095,7 +1095,7 @@ def get_datastore_usage(hostname: Optional[str] = None) -> str:
 
 @mcp.tool()
 def get_vm_performance_info(hostname: Optional[str] = None, limit: int = 15) -> str:
-    """Top powered-on VMs by live CPU usage, with memory usage (one bulk query).
+    """Top powered-on VMs by live CPU usage, with memory usage (bulk queries, never per-VM).
 
     cpu_usage_mhz and memory_usage_gb are real-time usage from vCenter
     quickStats; cpu_count/memory_mb are the allocation. For other views
