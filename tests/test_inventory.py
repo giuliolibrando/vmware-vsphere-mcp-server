@@ -85,3 +85,79 @@ class TestApplyFilters:
     def test_missing_key_is_treated_as_none(self):
         out = apply_filters([{"name": "x"}], [fc("guest_os", "ne", "anything")])
         assert names(out) == ["x"]
+
+
+from vsphere_mcp_server.inventory import (
+    OBJECT_TYPES,
+    aggregate,
+    format_distribution,
+    format_rows,
+    validate_query,
+)
+
+
+class TestValidateQuery:
+    def test_valid_query_returns_none(self):
+        assert validate_query(
+            "vm", [fc("hardware_version", "eq", "vmx-13")],
+            "guest_os", ["name", "cluster"]) is None
+
+    def test_unknown_filter_field_lists_valid_fields(self):
+        error = validate_query("vm", [fc("flux_capacitor", "eq", 1)], None, None)
+        assert "flux_capacitor" in error
+        assert "hardware_version" in error  # names the valid fields
+
+    def test_unknown_group_by_and_fields_are_reported(self):
+        error = validate_query("host", None, "nope1", ["nope2"])
+        assert "nope1" in error and "nope2" in error
+
+    def test_every_object_type_has_valid_default_fields(self):
+        for object_type, cfg in OBJECT_TYPES.items():
+            for field in cfg["default_fields"]:
+                assert field in cfg["fields"], (object_type, field)
+
+
+class TestAggregate:
+    def test_counts_sorted_desc_then_value_and_unknown_bucket(self):
+        rows = [{"os": "Ubuntu"}, {"os": "Windows"}, {"os": "Ubuntu"},
+                {"os": None}, {"os": "Debian"}]
+        assert aggregate(rows, "os") == [
+            ("Ubuntu", 2), ("(unknown)", 1), ("Debian", 1), ("Windows", 1)]
+
+    def test_empty_rows(self):
+        assert aggregate([], "os") == []
+
+
+class TestFormatDistribution:
+    def test_shows_counts_and_percentages(self):
+        out = format_distribution(
+            [("Ubuntu", 2), ("Windows", 1)], "guest_os", "VMs")
+        assert "guest_os" in out and "3 VMs" in out
+        assert "Ubuntu: 2 (66.7%)" in out
+        assert "Windows: 1 (33.3%)" in out
+
+    def test_empty_distribution(self):
+        assert format_distribution([], "guest_os", "VMs") == "No matching VMs"
+
+
+class TestFormatRows:
+    ROWS = [{"name": f"vm-{i:02d}", "power_state": "poweredOn"} for i in range(60)]
+
+    def test_caps_at_limit_with_header(self):
+        out = format_rows(self.ROWS, ["name", "power_state"], 100, "VMs", 50)
+        assert "Matched 60 of 100 VMs (showing 50" in out
+        assert "vm-49" in out and "vm-50" not in out
+
+    def test_limit_zero_is_unlimited(self):
+        out = format_rows(self.ROWS, ["name"], 100, "VMs", 0)
+        assert "vm-59" in out and "(showing" not in out
+
+    def test_zero_matches(self):
+        assert format_rows([], ["name"], 100, "VMs", 50) == "Matched 0 of 100 VMs"
+
+    def test_row_shows_only_requested_fields(self):
+        out = format_rows(
+            [{"name": "db01", "guest_os": "Ubuntu", "memory_mb": 4096}],
+            ["name", "memory_mb"], 1, "VMs", 50)
+        assert "• db01 — memory_mb: 4096" in out
+        assert "Ubuntu" not in out
