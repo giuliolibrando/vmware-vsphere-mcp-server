@@ -41,6 +41,7 @@ def test_every_tool_declares_annotations_with_closed_world():
 def test_read_only_tools_are_marked_read_only():
     for tool in _tools():
         if tool.name not in MUTATING:
+            assert tool.annotations is not None, tool.name
             assert tool.annotations.readOnlyHint is True, tool.name
 
 
@@ -48,6 +49,7 @@ def test_mutating_tools_declare_destructive_and_idempotent_hints():
     by_name = {tool.name: tool for tool in _tools()}
     for name, (destructive, idempotent) in MUTATING.items():
         annotations = by_name[name].annotations
+        assert annotations is not None, name
         assert annotations.readOnlyHint is False, name
         assert annotations.destructiveHint is destructive, name
         assert annotations.idempotentHint is idempotent, name
