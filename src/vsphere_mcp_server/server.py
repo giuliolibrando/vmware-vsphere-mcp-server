@@ -2240,17 +2240,38 @@ def get_vm_networks_pyvmomi(vm_name: str, hostname: str = None) -> str:
 def main() -> None:
     """Main entry point for the MCP server."""
     import os
+    import sys
     from dotenv import load_dotenv
-    
+
     # Load environment variables
     load_dotenv()
-    
+
+    transport = os.environ.get("MCP_TRANSPORT", "streamable-http")
+
+    if transport == "stdio":
+        # stdio has no safe interactive fallback: credentials.py's
+        # _prompt_for_credentials() would read/write over the same
+        # stdin/stdout used for JSON-RPC and corrupt the protocol stream.
+        required_vars = ["VCENTER_HOST", "VCENTER_USER", "VCENTER_PASSWORD"]
+        missing = [name for name in required_vars if not os.environ.get(name)]
+        if missing:
+            print(
+                "Error: missing required environment variable(s) for stdio "
+                f"transport: {', '.join(missing)}. Set them in the MCP "
+                "client's server config — stdio cannot prompt interactively.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        mcp.run(transport="stdio")
+        return
+
     # Configure FastMCP settings for streamable HTTP transport
     mcp.settings.host = os.getenv("SERVER_HOST", "0.0.0.0")
     mcp.settings.port = int(os.getenv("SERVER_PORT", "8000"))
     mcp.settings.stateless_http = False
     mcp.settings.json_response = True  # Return JSON instead of SSE for simpler parsing
-    
+
     # Run with streamable HTTP transport
     mcp.run(transport="streamable-http")
 
