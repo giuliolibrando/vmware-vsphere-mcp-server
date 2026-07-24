@@ -2,6 +2,7 @@
 
 import os
 import re
+import time
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -10,6 +11,7 @@ from mcp.server.fastmcp import FastMCP
 from .vsphere_client import VSphereClient
 from .pyvmomi_client import PyVmomiClient
 from .inventory import (FilterCondition, aggregate, fetch_inventory,
+                        find_object, flatten_snapshot_tree, match_snapshot,
                         run_inventory_query, sort_rows)
 from pyVmomi import vim, vmodl
 
@@ -29,6 +31,22 @@ def _handle_error(e: Exception, operation: str) -> str:
     if "Connection" in error_msg or "timeout" in error_msg.lower():
         return f"Connection failed for {operation}. Check network connectivity and hostname."
     return f"Error in {operation}: {error_msg}"
+
+
+def _wait_for_pyvmomi_task(task, timeout=300, interval=2):
+    """Poll a pyVmomi task until it leaves queued/running.
+
+    Returns (task_info, timed_out).
+    """
+    elapsed = 0
+    info = task.info
+    while info.state in (vim.TaskInfo.State.queued, vim.TaskInfo.State.running):
+        if elapsed >= timeout:
+            return info, True
+        time.sleep(interval)
+        elapsed += interval
+        info = task.info
+    return info, False
 
 
 # VM Management Tools
@@ -324,33 +342,52 @@ def list_hosts(
 def get_host_details(hostname: Optional[str] = None, host_id: Optional[str] = None) -> str:
     """Get detailed information about an ESXi host.
 
+    Served by the inventory engine in one bulk fetch: the vSphere
+    Automation REST API has no per-host detail endpoint. Includes
+    hardware, versions, cluster membership, and live quickStats.
+
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
-        host_id: ESXi host ID
+        host_id: ESXi host ID (host-###) or name
     """
     if hostname is None:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return 'Error: No hostname provided and VCENTER_HOST not set in environment'
-    client = VSphereClient(hostname)
+    if not host_id:
+        return "Error: host_id (host-### or host name) is required"
+
+    fields = ["name", "host_id", "connection_state", "power_state",
+              "maintenance_mode", "esxi_version", "build", "vendor",
+              "model", "cpu_model", "cpu_cores", "cpu_threads",
+              "memory_gb", "cluster", "vm_count", "cpu_usage_mhz",
+              "memory_usage_gb", "uptime_days"]
+    pv_client = PyVmomiClient(host=hostname)
     try:
-        response = client.get(f"vcenter/host/{host_id}")
-        host = response.get("value", {})
-
-        if not host:
-            return f"ESXi host {host_id} not found"
-
-        result = f"Host Details: {host.get('name', 'Unknown')}\n"
-        result += f"ID: {host_id}\n"
-        result += f"Connection State: {host.get('connection_state', 'Unknown')}\n"
-        result += f"Power State: {host.get('power_state', 'Unknown')}\n"
-
-        return result
-
-    except (ConnectionError, ValueError, KeyError) as e:
-        return _handle_error(e, f"getting host {host_id} details")
+        rows = fetch_inventory(pv_client, "host", fields)
+    except Exception as e:
+        return f"Error getting host {host_id} details: {e}"
     finally:
-        client.close()
+        pv_client.close()
+
+    if host_id.startswith("host-"):
+        matches = [r for r in rows if r.get("host_id") == host_id]
+    else:
+        matches = [r for r in rows
+                   if (r.get("name") or "").lower() == host_id.lower()]
+    if not matches:
+        known = ", ".join(f"{r.get('name')} ({r.get('host_id')})"
+                          for r in rows)
+        return f"ESXi host '{host_id}' not found. Known hosts: {known}"
+    if len(matches) > 1:
+        ids = ", ".join(str(r.get("host_id")) for r in matches)
+        return f"Host name '{host_id}' is ambiguous ({ids}); use the ID."
+
+    row = matches[0]
+    lines = [f"Host Details: {row.get('name')}", ""]
+    for field in fields[1:]:
+        lines.append(f"  {field}: {row.get(field)}")
+    return "\n".join(lines)
 
 
 @mcp.tool()
@@ -1175,10 +1212,14 @@ def get_vms_with_high_resource_usage(hostname: Optional[str] = None,
 # Snapshot Management Tools
 @mcp.tool()
 def list_vm_snapshots(vm_id: str, hostname: Optional[str] = None) -> str:
-    """List all snapshots for a specific VM.
+    """List all snapshots for a specific VM, including the snapshot tree.
+
+    Uses pyVmomi: the vSphere Automation REST API has no snapshot
+    endpoints. Child snapshots are indented under their parent; the
+    currently active snapshot is marked.
 
     Args:
-        vm_id: Virtual machine ID or name
+        vm_id: Virtual machine ID (vm-###) or name
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
     """
     if hostname is None:
@@ -1186,52 +1227,52 @@ def list_vm_snapshots(vm_id: str, hostname: Optional[str] = None) -> str:
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
 
-    client = VSphereClient(hostname)
+    pv_client = PyVmomiClient(host=hostname)
     try:
-        # If vm_id doesn't start with 'vm-', assume it's a name and look up the ID
-        if not vm_id.startswith("vm-"):
-            vms_response = client.get("vcenter/vm")
-            vms = vms_response.get("value", [])
-
-            vm_id_found = None
-            for vm in vms:
-                if vm.get("name", "").lower() == vm_id.lower():
-                    vm_id_found = vm.get("vm")
-                    break
-
-            if not vm_id_found:
-                return f"Virtual machine '{vm_id}' not found by name"
-            vm_id = vm_id_found
-
-        # Get VM snapshots
-        response = client.get(f"vcenter/vm/{vm_id}/snapshot")
-        snapshots = response.get("value", [])
-
-        if not snapshots:
-            return f"No snapshots found for VM {vm_id}"
-
-        result = f"Snapshots for VM {vm_id}:\n\n"
-        for snapshot in snapshots:
-            result += f"• {snapshot.get('name', 'Unknown')} (ID: {snapshot.get('snapshot')})\n"
-            result += f"  Created: {snapshot.get('create_time', 'Unknown')}\n"
-            result += f"  State: {snapshot.get('state', 'Unknown')}\n\n"
-
-        return result.strip()
-
-    except (ConnectionError, ValueError, KeyError) as e:
-        return _handle_error(e, f"listing snapshots for VM {vm_id}")
+        vm, error = find_object(pv_client, "vm", vm_id, "vm-")
+        if vm is None:
+            return error or f"VM '{vm_id}' not found"
+        snapshot_info = vm.snapshot
+        rows = flatten_snapshot_tree(
+            snapshot_info.rootSnapshotList if snapshot_info else None)
+        if not rows:
+            return f"No snapshots found for VM {vm.name} ({vm._moId})"
+        current_id = (getattr(snapshot_info.currentSnapshot, "_moId", None)
+                      if snapshot_info else None)
+        lines = [f"Snapshots for VM {vm.name} ({vm._moId}) — "
+                 f"{len(rows)} total:", ""]
+        for row in rows:
+            indent = "  " * row["depth"]
+            marker = "  ← current" if row["snapshot_id"] == current_id else ""
+            lines.append(
+                f"{indent}• {row['name']} (ID: {row['snapshot_id']}){marker}")
+            lines.append(f"{indent}  Created: {row['created']}, "
+                         f"state: {row['state']}, quiesced: {row['quiesced']}")
+            if row["description"]:
+                lines.append(f"{indent}  Description: {row['description']}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error listing snapshots for VM {vm_id}: {e}"
     finally:
-        client.close()
+        pv_client.close()
 
 
 @mcp.tool()
-def create_vm_snapshot(vm_id: str, snapshot_name: str, description: str = "", hostname: Optional[str] = None) -> str:
+def create_vm_snapshot(vm_id: str, snapshot_name: str, description: str = "",
+                       memory: bool = False, quiesce: bool = False,
+                       hostname: Optional[str] = None) -> str:
     """Create a snapshot for a specific VM.
 
+    Uses pyVmomi: the vSphere Automation REST API has no snapshot
+    endpoints. Waits for the snapshot task to finish.
+
     Args:
-        vm_id: Virtual machine ID or name
+        vm_id: Virtual machine ID (vm-###) or name
         snapshot_name: Name for the snapshot
         description: Description for the snapshot (optional)
+        memory: Also capture the VM's memory state (powered-on VMs only)
+        quiesce: Quiesce the guest filesystem via VMware Tools (needs
+            running tools; ignored for powered-off VMs)
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
     """
     if hostname is None:
@@ -1239,38 +1280,29 @@ def create_vm_snapshot(vm_id: str, snapshot_name: str, description: str = "", ho
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
 
-    client = VSphereClient(hostname)
+    pv_client = PyVmomiClient(host=hostname)
     try:
-        # If vm_id doesn't start with 'vm-', assume it's a name and look up the ID
-        if not vm_id.startswith("vm-"):
-            vms_response = client.get("vcenter/vm")
-            vms = vms_response.get("value", [])
-
-            vm_id_found = None
-            for vm in vms:
-                if vm.get("name", "").lower() == vm_id.lower():
-                    vm_id_found = vm.get("vm")
-                    break
-
-            if not vm_id_found:
-                return f"Virtual machine '{vm_id}' not found by name"
-            vm_id = vm_id_found
-
-        # Create snapshot
-        snapshot_data = {
-            "name": snapshot_name,
-            "description": description,
-            "memory": True,
-            "quiesce": True
-        }
-
-        client.post(f"vcenter/vm/{vm_id}/snapshot", snapshot_data)
-        return f"Snapshot '{snapshot_name}' created successfully for VM {vm_id}"
-
-    except (ConnectionError, ValueError, KeyError) as e:
-        return _handle_error(e, f"creating snapshot for VM {vm_id}")
+        vm, error = find_object(pv_client, "vm", vm_id, "vm-")
+        if vm is None:
+            return error or f"VM '{vm_id}' not found"
+        task = vm.CreateSnapshot_Task(
+            name=snapshot_name, description=description,
+            memory=memory, quiesce=quiesce)
+        info, timed_out = _wait_for_pyvmomi_task(task)
+        if timed_out:
+            return (f"Snapshot task for VM {vm.name} still running after "
+                    f"300s (state={info.state}); check vCenter tasks.")
+        if info.state == vim.TaskInfo.State.success:
+            snap_id = getattr(info.result, "_moId", "unknown")
+            return (f"✅ Snapshot '{snapshot_name}' created for VM "
+                    f"{vm.name} ({vm._moId}). Snapshot ID: {snap_id}")
+        fault = info.error
+        return (f"❌ Snapshot creation failed for VM {vm.name}: "
+                f"{fault.msg if fault else 'Unknown error'}")
+    except Exception as e:
+        return f"Error creating snapshot for VM {vm_id}: {e}"
     finally:
-        client.close()
+        pv_client.close()
 
 
 # Template Management Tools
@@ -1669,9 +1701,12 @@ def bulk_power_operations(operation: str, vm_list: str, hostname: Optional[str] 
 def delete_vm_snapshot(vm_id: str, snapshot_id: str, confirm: bool = False, hostname: Optional[str] = None) -> str:
     """Delete a snapshot for a specific VM. REQUIRES CONFIRMATION.
 
+    Uses pyVmomi: the vSphere Automation REST API has no snapshot
+    endpoints. Child snapshots are kept (only this snapshot is removed).
+
     Args:
-        vm_id: Virtual machine ID or name
-        snapshot_id: Snapshot ID to delete
+        vm_id: Virtual machine ID (vm-###) or name
+        snapshot_id: Snapshot ID (snapshot-###) or snapshot name
         confirm: Must be True to proceed with deletion
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
     """
@@ -1683,31 +1718,34 @@ def delete_vm_snapshot(vm_id: str, snapshot_id: str, confirm: bool = False, host
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
 
-    client = VSphereClient(hostname)
+    pv_client = PyVmomiClient(host=hostname)
     try:
-        # If vm_id doesn't start with 'vm-', assume it's a name and look up the ID
-        if not vm_id.startswith("vm-"):
-            vms_response = client.get("vcenter/vm")
-            vms = vms_response.get("value", [])
-
-            vm_id_found = None
-            for vm in vms:
-                if vm.get("name", "").lower() == vm_id.lower():
-                    vm_id_found = vm.get("vm")
-                    break
-
-            if not vm_id_found:
-                return f"Virtual machine '{vm_id}' not found by name"
-            vm_id = vm_id_found
-
-        # Delete snapshot
-        client.delete(f"vcenter/vm/{vm_id}/snapshot/{snapshot_id}")
-        return f"✅ Snapshot {snapshot_id} deleted successfully for VM {vm_id}"
-
-    except (ConnectionError, ValueError, KeyError) as e:
-        return _handle_error(e, f"deleting snapshot {snapshot_id} for VM {vm_id}")
+        vm, error = find_object(pv_client, "vm", vm_id, "vm-")
+        if vm is None:
+            return error or f"VM '{vm_id}' not found"
+        snapshot_info = vm.snapshot
+        rows = flatten_snapshot_tree(
+            snapshot_info.rootSnapshotList if snapshot_info else None)
+        if not rows:
+            return f"No snapshots found for VM {vm.name} ({vm._moId})"
+        row, error = match_snapshot(rows, snapshot_id)
+        if row is None:
+            return error or f"Snapshot '{snapshot_id}' not found"
+        task = row["snapshot_obj"].RemoveSnapshot_Task(removeChildren=False)
+        info, timed_out = _wait_for_pyvmomi_task(task)
+        if timed_out:
+            return (f"Snapshot removal task for VM {vm.name} still running "
+                    f"after 300s (state={info.state}); check vCenter tasks.")
+        if info.state == vim.TaskInfo.State.success:
+            return (f"✅ Snapshot '{row['name']}' ({row['snapshot_id']}) "
+                    f"deleted for VM {vm.name} ({vm._moId})")
+        fault = info.error
+        return (f"❌ Snapshot deletion failed for VM {vm.name}: "
+                f"{fault.msg if fault else 'Unknown error'}")
+    except Exception as e:
+        return f"Error deleting snapshot {snapshot_id} for VM {vm_id}: {e}"
     finally:
-        client.close()
+        pv_client.close()
 
 
 @mcp.tool()

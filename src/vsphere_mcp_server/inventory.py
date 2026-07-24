@@ -130,6 +130,53 @@ def _snapshot_count(node_list):
     return count
 
 
+def flatten_snapshot_tree(node_list):
+    """Flatten vm.snapshot.rootSnapshotList depth-first into row dicts.
+
+    Each row carries display values plus the live vim.vm.Snapshot managed
+    object (snapshot_obj) so callers can act on it (e.g. RemoveSnapshot_Task).
+    """
+    rows = []
+
+    def walk(nodes, depth):
+        for node in nodes or []:
+            rows.append({
+                "name": node.name,
+                "snapshot_id": getattr(node.snapshot, "_moId", None),
+                "created": str(node.createTime) if node.createTime else None,
+                "state": str(node.state) if node.state else None,
+                "description": node.description or "",
+                "quiesced": bool(node.quiesced),
+                "depth": depth,
+                "snapshot_obj": node.snapshot,
+            })
+            walk(getattr(node, "childSnapshotList", None), depth + 1)
+
+    walk(node_list, 0)
+    return rows
+
+
+def match_snapshot(rows, ident):
+    """Pick one snapshot row by moId (exact) or name (case-insensitive).
+
+    Returns (row, None) on a unique match, else (None, error_message).
+    """
+    by_id = [r for r in rows if r["snapshot_id"] == ident]
+    if by_id:
+        return by_id[0], None
+    by_name = [r for r in rows if (r["name"] or "").lower() == ident.lower()]
+    if len(by_name) == 1:
+        return by_name[0], None
+    if not by_name:
+        available = ", ".join(
+            f"{r['name']} ({r['snapshot_id']})" for r in rows)
+        return None, (f"Snapshot '{ident}' not found. "
+                      f"Available snapshots: {available or '(none)'}")
+    ids = ", ".join(r["snapshot_id"] for r in by_name)
+    return None, (f"Snapshot name '{ident}' is ambiguous "
+                  f"({len(by_name)} matches: {ids}). Use the snapshot ID.")
+
+
 def _vm_host(props, ctx):
     info = ctx.get("host_info", {}).get(_ref_id(props.get("runtime.host")))
     return info.get("name") if info else None
@@ -438,6 +485,31 @@ def fetch_inventory(client, object_type, field_names, container=None):
                 row[field_name] = None
         rows.append(row)
     return rows
+
+
+def find_object(client, object_type, ident, id_prefix):
+    """Resolve a moId (ident starting with id_prefix) or a display name to
+    the managed object, via one bulk name fetch — never per-object calls.
+
+    Names match case-insensitively and must be unique. Returns
+    (managed_object, None) on success, else (None, error_message).
+    """
+    cfg = OBJECT_TYPES[object_type]
+    pairs = _collect(client, cfg["vim_type"], {cfg["vim_type"]: {"name"}})
+    if ident.startswith(id_prefix):
+        for obj, _ in pairs:
+            if obj._moId == ident:
+                return obj, None
+        return None, f"'{ident}' not found (no {cfg['label']} with that ID)"
+    matches = [(obj, props) for obj, props in pairs
+               if (props.get("name") or "").lower() == ident.lower()]
+    if len(matches) == 1:
+        return matches[0][0], None
+    if not matches:
+        return None, f"'{ident}' not found among {len(pairs)} {cfg['label']}"
+    ids = ", ".join(obj._moId for obj, _ in matches)
+    return None, (f"Name '{ident}' is ambiguous ({len(matches)} matches: "
+                  f"{ids}). Use the ID instead.")
 
 
 def run_inventory_query(client, object_type, filters=None, group_by=None,

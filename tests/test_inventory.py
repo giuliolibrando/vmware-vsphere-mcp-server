@@ -355,3 +355,104 @@ class TestFieldPropagationToFetch:
             None, "vm", group_by="guest_os",
             filters=[fc("cpu_count", "gte", 8)])
         assert {"guest_os", "cpu_count"} <= set(captured["field_names"])
+
+
+from datetime import datetime
+from types import SimpleNamespace
+
+
+class TestFlattenSnapshotTree:
+    @staticmethod
+    def _node(name, moid, children=(), description="", quiesced=False):
+        return SimpleNamespace(
+            name=name,
+            snapshot=SimpleNamespace(_moId=moid),
+            createTime=datetime(2026, 1, 2, 3, 4, 5),
+            state="poweredOff",
+            description=description,
+            quiesced=quiesced,
+            childSnapshotList=list(children),
+        )
+
+    def test_nested_tree_flattens_depth_first_with_depth(self):
+        tree = [
+            self._node("base", "snapshot-1", children=[
+                self._node("child", "snapshot-2", children=[
+                    self._node("grandchild", "snapshot-3")])]),
+            self._node("sibling", "snapshot-4"),
+        ]
+        rows = inventory.flatten_snapshot_tree(tree)
+        assert [(r["name"], r["depth"]) for r in rows] == [
+            ("base", 0), ("child", 1), ("grandchild", 2), ("sibling", 0)]
+        assert rows[2]["snapshot_id"] == "snapshot-3"
+        assert rows[0]["created"] == "2026-01-02 03:04:05"
+        assert rows[0]["snapshot_obj"] is tree[0].snapshot
+
+    def test_empty_or_none_tree_yields_no_rows(self):
+        assert inventory.flatten_snapshot_tree(None) == []
+        assert inventory.flatten_snapshot_tree([]) == []
+
+
+class TestMatchSnapshot:
+    ROWS = [
+        {"name": "base", "snapshot_id": "snapshot-1"},
+        {"name": "pre-upgrade", "snapshot_id": "snapshot-2"},
+        {"name": "PRE-UPGRADE", "snapshot_id": "snapshot-3"},
+    ]
+
+    def test_matches_by_id_first(self):
+        row, err = inventory.match_snapshot(self.ROWS, "snapshot-2")
+        assert err is None and row is not None
+        assert row["name"] == "pre-upgrade"
+
+    def test_matches_unique_name_case_insensitively(self):
+        row, err = inventory.match_snapshot(self.ROWS, "BASE")
+        assert err is None and row is not None
+        assert row["snapshot_id"] == "snapshot-1"
+
+    def test_ambiguous_name_returns_error_listing_ids(self):
+        row, err = inventory.match_snapshot(self.ROWS, "pre-upgrade")
+        assert row is None
+        assert err is not None
+        assert "snapshot-2" in err and "snapshot-3" in err
+
+    def test_unknown_ident_returns_error_listing_available(self):
+        row, err = inventory.match_snapshot(self.ROWS, "nope")
+        assert row is None and err is not None and "base" in err
+
+
+class TestFindObject:
+    PAIRS = [
+        (SimpleNamespace(_moId="vm-1"), {"name": "Alpha"}),
+        (SimpleNamespace(_moId="vm-2"), {"name": "beta"}),
+        (SimpleNamespace(_moId="vm-3"), {"name": "BETA"}),
+    ]
+
+    def _patch(self, monkeypatch):
+        monkeypatch.setattr(
+            inventory, "_collect",
+            lambda client, vim_type, path_specs, container=None: self.PAIRS)
+
+    def test_resolves_moid_when_ident_has_id_prefix(self, monkeypatch):
+        self._patch(monkeypatch)
+        obj, err = inventory.find_object(None, "vm", "vm-2", "vm-")
+        assert err is None and obj is not None
+        assert obj._moId == "vm-2"
+
+    def test_resolves_unique_name_case_insensitively(self, monkeypatch):
+        self._patch(monkeypatch)
+        obj, err = inventory.find_object(None, "vm", "ALPHA", "vm-")
+        assert err is None and obj is not None
+        assert obj._moId == "vm-1"
+
+    def test_duplicate_names_error_lists_ids(self, monkeypatch):
+        self._patch(monkeypatch)
+        obj, err = inventory.find_object(None, "vm", "beta", "vm-")
+        assert obj is None and err is not None
+        assert "vm-2" in err and "vm-3" in err
+
+    def test_unknown_ident_errors(self, monkeypatch):
+        self._patch(monkeypatch)
+        obj, err = inventory.find_object(None, "vm", "vm-99", "vm-")
+        assert obj is None and err is not None
+        assert "not found" in err.lower()
