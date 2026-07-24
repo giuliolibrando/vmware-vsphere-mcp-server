@@ -104,11 +104,13 @@ class TestValidateQuery:
 
     def test_unknown_filter_field_lists_valid_fields(self):
         error = validate_query("vm", [fc("flux_capacitor", "eq", 1)], None, None)
+        assert error is not None
         assert "flux_capacitor" in error
         assert "hardware_version" in error  # names the valid fields
 
     def test_unknown_group_by_and_fields_are_reported(self):
         error = validate_query("host", None, "nope1", ["nope2"])
+        assert error is not None
         assert "nope1" in error and "nope2" in error
 
     def test_every_object_type_has_valid_default_fields(self):
@@ -196,6 +198,27 @@ class TestRunInventoryQuery:
             None, "vm", filters=[fc("bogus", "eq", 1)])
         assert "Unknown field" in out and "bogus" in out
 
+    def test_group_by_distribution_is_capped_at_limit(self, monkeypatch):
+        rows = [{"name": f"vm-{i:03d}"} for i in range(80)]
+        monkeypatch.setattr(
+            inventory, "fetch_inventory",
+            lambda client, object_type, field_names, container=None: rows)
+        out = inventory.run_inventory_query(None, "vm", group_by="name",
+                                            limit=50)
+        assert out.count("vm-0") + out.count("vm-1") <= 50 + 2  # header slack
+        assert "vm-079" not in out
+        assert "30 more" in out
+
+    def test_group_by_limit_zero_shows_all_values(self, monkeypatch):
+        rows = [{"name": f"vm-{i:03d}"} for i in range(80)]
+        monkeypatch.setattr(
+            inventory, "fetch_inventory",
+            lambda client, object_type, field_names, container=None: rows)
+        out = inventory.run_inventory_query(None, "vm", group_by="name",
+                                            limit=0)
+        assert "vm-079" in out
+        assert "more" not in out
+
 
 class TestPrefixNumberComparisons:
     ROWS = [
@@ -230,3 +253,105 @@ class TestPrefixNumberComparisons:
         rows = [{"esxi_version": "7.0.3"}, {"esxi_version": "8.0.1"}]
         out = apply_filters(rows, [fc("esxi_version", "gte", "esx-8")])
         assert out == []
+
+
+from vsphere_mcp_server.inventory import sort_rows
+
+
+class TestSortRows:
+    ROWS = [
+        {"name": "b", "memory_mb": 4096, "hardware_version": "vmx-13"},
+        {"name": "a", "memory_mb": 16384, "hardware_version": "vmx-08"},
+        {"name": "c", "memory_mb": None, "hardware_version": "vmx-9"},
+        {"name": "d", "memory_mb": 2048, "hardware_version": None},
+    ]
+
+    def test_numeric_descending_by_default_with_none_last(self):
+        assert names(sort_rows(self.ROWS, "memory_mb")) == ["a", "b", "d", "c"]
+
+    def test_ascending_also_keeps_none_last(self):
+        out = sort_rows(self.ROWS, "memory_mb", descending=False)
+        assert names(out) == ["d", "b", "a", "c"]
+
+    def test_prefix_number_strings_sort_numerically(self):
+        out = sort_rows(self.ROWS, "hardware_version", descending=False)
+        assert names(out) == ["a", "c", "b", "d"]  # vmx-08 < vmx-9 < vmx-13
+
+    def test_plain_strings_sort_case_insensitively(self):
+        rows = [{"name": "Zed"}, {"name": "apple"}, {"name": "Mango"}]
+        out = sort_rows(rows, "name", descending=False)
+        assert names(out) == ["apple", "Mango", "Zed"]
+
+    def test_mixed_numeric_and_word_values_fall_back_to_string_order(self):
+        rows = [{"v": "10"}, {"v": "high"}, {"v": "2"}]
+        out = sort_rows(rows, "v", descending=False)
+        assert [r["v"] for r in out] == ["10", "2", "high"]
+
+    def test_input_list_is_not_mutated(self):
+        rows = list(self.ROWS)
+        sort_rows(rows, "memory_mb")
+        assert rows == self.ROWS
+
+
+class TestRunInventoryQuerySort:
+    def test_sort_by_orders_listing_before_limit(self, monkeypatch):
+        rows = [{"name": f"vm-{i}", "memory_mb": i * 1024} for i in range(1, 6)]
+        monkeypatch.setattr(
+            inventory, "fetch_inventory",
+            lambda client, object_type, field_names, container=None: rows)
+        out = inventory.run_inventory_query(
+            None, "vm", fields=["name", "memory_mb"],
+            sort_by="memory_mb", limit=2)
+        assert out.index("vm-5") < out.index("vm-4")
+        assert "vm-3" not in out
+
+    def test_unknown_sort_by_reports_error(self, monkeypatch):
+        def boom(*args, **kwargs):
+            raise AssertionError("fetch_inventory must not be called")
+        monkeypatch.setattr(inventory, "fetch_inventory", boom)
+        out = inventory.run_inventory_query(None, "vm", sort_by="warp_factor")
+        assert "Unknown field" in out and "warp_factor" in out
+
+    def test_sort_field_need_not_be_displayed(self, monkeypatch):
+        rows = [{"name": "small", "memory_mb": 1024},
+                {"name": "big", "memory_mb": 8192}]
+        monkeypatch.setattr(
+            inventory, "fetch_inventory",
+            lambda client, object_type, field_names, container=None: rows)
+        out = inventory.run_inventory_query(
+            None, "vm", fields=["name"], sort_by="memory_mb", limit=1)
+        assert "big" in out and "small" not in out
+
+
+class TestFieldPropagationToFetch:
+    """fetch_inventory must be asked for every field the query touches —
+    the fakes elsewhere ignore field_names, so regressions in the
+    `needed` computation would otherwise go unnoticed."""
+
+    def _capture(self, monkeypatch):
+        captured = {}
+
+        def fake(client, object_type, field_names, container=None):
+            captured["field_names"] = list(field_names)
+            return []
+
+        monkeypatch.setattr(inventory, "fetch_inventory", fake)
+        return captured
+
+    def test_listing_fetch_includes_display_filter_and_sort_fields(
+            self, monkeypatch):
+        captured = self._capture(monkeypatch)
+        inventory.run_inventory_query(
+            None, "vm", fields=["name"],
+            filters=[fc("power_state", "eq", "poweredOn")],
+            sort_by="memory_mb")
+        assert {"name", "power_state", "memory_mb"} <= set(
+            captured["field_names"])
+
+    def test_group_by_fetch_includes_group_and_filter_fields(
+            self, monkeypatch):
+        captured = self._capture(monkeypatch)
+        inventory.run_inventory_query(
+            None, "vm", group_by="guest_os",
+            filters=[fc("cpu_count", "gte", 8)])
+        assert {"guest_os", "cpu_count"} <= set(captured["field_names"])

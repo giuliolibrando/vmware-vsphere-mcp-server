@@ -2,13 +2,15 @@
 
 import os
 import re
-from typing import Dict, List
+from datetime import datetime
+from typing import Dict, List, Optional
 
 from mcp.server.fastmcp import FastMCP
 
 from .vsphere_client import VSphereClient
 from .pyvmomi_client import PyVmomiClient
-from .inventory import FilterCondition, run_inventory_query
+from .inventory import (FilterCondition, aggregate, fetch_inventory,
+                        run_inventory_query, sort_rows)
 from pyVmomi import vim, vmodl
 
 # Initialize MCP server
@@ -32,34 +34,40 @@ def _handle_error(e: Exception, operation: str) -> str:
 # VM Management Tools
 @mcp.tool()
 def list_vms(
-    hostname: str = None,
-    filters: List[FilterCondition] = None,
-    group_by: str = None,
-    fields: List[str] = None,
+    hostname: Optional[str] = None,
+    filters: Optional[List[FilterCondition]] = None,
+    group_by: Optional[str] = None,
+    fields: Optional[List[str]] = None,
     limit: int = 50,
+    sort_by: Optional[str] = None,
+    descending: bool = True,
 ) -> str:
-    """List, filter, or count virtual machines.
+    """List, filter, count, or rank virtual machines.
 
-    Without filters/group_by/fields this is a basic listing. With any of
-    them, an in-process engine fetches properties for ALL VMs in one call,
-    filters/aggregates server-side, and returns only the result — use this
-    instead of listing everything and filtering yourself.
+    Without filters/group_by/fields/sort_by this is a basic listing. With
+    any of them, an in-process engine fetches properties for ALL VMs in one
+    call, filters/aggregates server-side, and returns only the result — use
+    this instead of listing everything and filtering yourself.
 
     Queryable fields: name, vm_id, power_state, connection_state, guest_os,
     guest_os_running, hardware_version, cpu_count, memory_mb, template,
     tools_status, tools_version, ip_address, guest_hostname, uuid,
-    annotation, host, cluster, storage_committed_gb, snapshot_count,
-    boot_time.
+    annotation, host, cluster, storage_committed_gb, storage_provisioned_gb,
+    disk_count, snapshot_count, boot_time, cpu_usage_mhz, memory_usage_gb,
+    uptime_days.
     Filter ops: eq, ne, contains, not_contains, gt, gte, lt, lte, in
     (conditions are ANDed; string matching is case-insensitive).
+    Note: power_state values are pyVmomi-style: poweredOn / poweredOff /
+    suspended.
 
     Examples:
       Which VMs run hardware version vmx-13?
         filters=[{"field": "hardware_version", "op": "eq", "value": "vmx-13"}]
       Show the OS distribution:
         group_by="guest_os"
-      VMs with hardware version vmx-13 or older:
-        filters=[{"field": "hardware_version", "op": "lte", "value": "vmx-13"}]
+      Top 10 VMs by used storage:
+        sort_by="storage_committed_gb", limit=10,
+        fields=["name", "storage_committed_gb"]
       Powered-on VMs that have snapshots:
         filters=[{"field": "power_state", "op": "eq", "value": "poweredOn"},
                  {"field": "snapshot_count", "op": "gt", "value": 0}]
@@ -69,19 +77,22 @@ def list_vms(
         filters: list of {field, op, value} conditions, ANDed
         group_by: return only a count distribution of this field
         fields: fields shown per VM (default: name, power_state, guest_os)
-        limit: max rows in listing output (default 50; 0 = unlimited)
+        limit: max rows in listing or distribution output (default 50; 0 = unlimited)
+        sort_by: order rows by this field before applying limit
+        descending: sort direction (default True = biggest/latest first)
     """
     if hostname is None:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
 
-    if filters or group_by or fields:
+    if filters or group_by or fields or sort_by:
         pv_client = PyVmomiClient(host=hostname)
         try:
             return run_inventory_query(pv_client, "vm", filters=filters,
                                        group_by=group_by, fields=fields,
-                                       limit=limit)
+                                       limit=limit, sort_by=sort_by,
+                                       descending=descending)
         except Exception as e:
             return f"Error querying VMs via pyVmomi: {e}"
         finally:
@@ -115,7 +126,7 @@ def list_vms(
 
 
 @mcp.tool()
-def get_vm_details(vm_id: str, hostname: str = None) -> str:
+def get_vm_details(vm_id: str, hostname: Optional[str] = None) -> str:
     """Get detailed information about a specific virtual machine.
 
     Args:
@@ -182,7 +193,7 @@ def get_vm_details(vm_id: str, hostname: str = None) -> str:
 
 
 @mcp.tool()
-def power_on_vm(vm_id: str, hostname: str = None) -> str:
+def power_on_vm(vm_id: str, hostname: Optional[str] = None) -> str:
     """Power on a virtual machine.
 
     Args:
@@ -205,7 +216,7 @@ def power_on_vm(vm_id: str, hostname: str = None) -> str:
 
 
 @mcp.tool()
-def power_off_vm(vm_id: str, hostname: str = None) -> str:
+def power_off_vm(vm_id: str, hostname: Optional[str] = None) -> str:
     """Power off a virtual machine.
 
     Args:
@@ -230,16 +241,19 @@ def power_off_vm(vm_id: str, hostname: str = None) -> str:
 # Infrastructure Tools
 @mcp.tool()
 def list_hosts(
-    hostname: str = None,
-    filters: List[FilterCondition] = None,
-    group_by: str = None,
-    fields: List[str] = None,
+    hostname: Optional[str] = None,
+    filters: Optional[List[FilterCondition]] = None,
+    group_by: Optional[str] = None,
+    fields: Optional[List[str]] = None,
     limit: int = 50,
+    sort_by: Optional[str] = None,
+    descending: bool = True,
 ) -> str:
-    """List, filter, or count ESXi hosts.
+    """List, filter, count, or rank ESXi hosts.
 
-    With filters/group_by/fields an in-process engine fetches properties for
-    ALL hosts in one call and returns only the filtered/aggregated result.
+    With filters/group_by/fields/sort_by an in-process engine fetches
+    properties for ALL hosts in one call and returns only the
+    filtered/aggregated result.
 
     Queryable fields: name, host_id, connection_state, power_state,
     maintenance_mode, esxi_version, build, vendor, model, cpu_model,
@@ -252,25 +266,29 @@ def list_hosts(
       ESXi version distribution: group_by="esxi_version"
       Hosts in maintenance mode:
         filters=[{"field": "maintenance_mode", "op": "eq", "value": true}]
+      Busiest hosts first: sort_by="cpu_usage_mhz"
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
         filters: list of {field, op, value} conditions, ANDed
         group_by: return only a count distribution of this field
         fields: fields shown per host (default: name, connection_state, esxi_version)
-        limit: max rows in listing output (default 50; 0 = unlimited)
+        limit: max rows in listing or distribution output (default 50; 0 = unlimited)
+        sort_by: order rows by this field before applying limit
+        descending: sort direction (default True = biggest first)
     """
     if hostname is None:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
 
-    if filters or group_by or fields:
+    if filters or group_by or fields or sort_by:
         pv_client = PyVmomiClient(host=hostname)
         try:
             return run_inventory_query(pv_client, "host", filters=filters,
                                        group_by=group_by, fields=fields,
-                                       limit=limit)
+                                       limit=limit, sort_by=sort_by,
+                                       descending=descending)
         except Exception as e:
             return f"Error querying hosts via pyVmomi: {e}"
         finally:
@@ -303,7 +321,7 @@ def list_hosts(
 
 
 @mcp.tool()
-def get_host_details(hostname: str = None, host_id: str = None) -> str:
+def get_host_details(hostname: Optional[str] = None, host_id: Optional[str] = None) -> str:
     """Get detailed information about an ESXi host.
 
     Args:
@@ -336,7 +354,7 @@ def get_host_details(hostname: str = None, host_id: str = None) -> str:
 
 
 @mcp.tool()
-def list_datacenters(hostname: str = None) -> str:
+def list_datacenters(hostname: Optional[str] = None) -> str:
     """List all datacenters.
 
     Args:
@@ -367,7 +385,7 @@ def list_datacenters(hostname: str = None) -> str:
 
 
 @mcp.tool()
-def get_datacenter_details(hostname: str = None, datacenter_id: str = None) -> str:
+def get_datacenter_details(hostname: Optional[str] = None, datacenter_id: Optional[str] = None) -> str:
     """Get detailed information about a datacenter.
 
     Args:
@@ -399,16 +417,19 @@ def get_datacenter_details(hostname: str = None, datacenter_id: str = None) -> s
 
 @mcp.tool()
 def list_datastores(
-    hostname: str = None,
-    filters: List[FilterCondition] = None,
-    group_by: str = None,
-    fields: List[str] = None,
+    hostname: Optional[str] = None,
+    filters: Optional[List[FilterCondition]] = None,
+    group_by: Optional[str] = None,
+    fields: Optional[List[str]] = None,
     limit: int = 50,
+    sort_by: Optional[str] = None,
+    descending: bool = True,
 ) -> str:
-    """List, filter, or count datastores.
+    """List, filter, count, or rank datastores.
 
-    With filters/group_by/fields an in-process engine fetches properties for
-    ALL datastores in one call and returns only the filtered/aggregated result.
+    With filters/group_by/fields/sort_by an in-process engine fetches
+    properties for ALL datastores in one call and returns only the
+    filtered/aggregated result.
 
     Queryable fields: name, datastore_id, type, capacity_gb, free_gb,
     free_pct, accessible, maintenance_mode, vm_count, host_count.
@@ -419,25 +440,29 @@ def list_datastores(
       Datastores below 10% free:
         filters=[{"field": "free_pct", "op": "lt", "value": 10}]
       Count by type: group_by="type"
+      Fullest first: sort_by="free_pct", descending=false
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
         filters: list of {field, op, value} conditions, ANDed
         group_by: return only a count distribution of this field
         fields: fields shown per datastore (default: name, type, capacity_gb, free_gb, free_pct)
-        limit: max rows in listing output (default 50; 0 = unlimited)
+        limit: max rows in listing or distribution output (default 50; 0 = unlimited)
+        sort_by: order rows by this field before applying limit
+        descending: sort direction (default True = biggest first)
     """
     if hostname is None:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
 
-    if filters or group_by or fields:
+    if filters or group_by or fields or sort_by:
         pv_client = PyVmomiClient(host=hostname)
         try:
             return run_inventory_query(pv_client, "datastore", filters=filters,
                                        group_by=group_by, fields=fields,
-                                       limit=limit)
+                                       limit=limit, sort_by=sort_by,
+                                       descending=descending)
         except Exception as e:
             return f"Error querying datastores via pyVmomi: {e}"
         finally:
@@ -477,7 +502,7 @@ def list_datastores(
 
 
 @mcp.tool()
-def get_datastore_details(hostname: str = None, datastore_id: str = None) -> str:
+def get_datastore_details(hostname: Optional[str] = None, datastore_id: Optional[str] = None) -> str:
     """Get detailed information about a datastore.
 
     Args:
@@ -527,12 +552,15 @@ def get_datastore_details(hostname: str = None, datastore_id: str = None) -> str
 
 # Organization Tools
 @mcp.tool()
-def list_folders(hostname: str = None, folder_type: str = "VIRTUAL_MACHINE") -> str:
+def list_folders(hostname: Optional[str] = None, folder_type: str = "VIRTUAL_MACHINE",
+                 name_contains: Optional[str] = None, limit: int = 50) -> str:
     """List folders by type.
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
         folder_type: Folder type (VIRTUAL_MACHINE, HOST, DATACENTER, DATASTORE, NETWORK)
+        name_contains: only folders whose name contains this (case-insensitive)
+        limit: max folders shown (default 50; 0 = unlimited)
     """
     if hostname is None:
         hostname = os.environ.get("VCENTER_HOST")
@@ -542,12 +570,20 @@ def list_folders(hostname: str = None, folder_type: str = "VIRTUAL_MACHINE") -> 
     try:
         response = client.get(f"vcenter/folder?filter.type={folder_type}")
         folders = response.get("value", [])
+        if name_contains:
+            folders = [f for f in folders
+                       if name_contains.lower() in f.get("name", "").lower()]
 
         if not folders:
             return f"No {folder_type} folders found"
 
-        result = f"Found {len(folders)} {folder_type} folders:\n\n"
-        for folder in folders:
+        shown = folders if limit == 0 else folders[:limit]
+        result = f"Found {len(folders)} {folder_type} folders"
+        if len(shown) < len(folders):
+            result += (f" (showing {len(shown)} — filter with name_contains "
+                       f"or raise limit)")
+        result += ":\n\n"
+        for folder in shown:
             result += (
                 f"• {folder.get('name', 'Unknown')} (ID: {folder.get('folder')})\n"
             )
@@ -561,7 +597,7 @@ def list_folders(hostname: str = None, folder_type: str = "VIRTUAL_MACHINE") -> 
 
 
 @mcp.tool()
-def get_folder_details(hostname: str = None, folder_id: str = None) -> str:
+def get_folder_details(hostname: Optional[str] = None, folder_id: Optional[str] = None) -> str:
     """Get detailed information about a folder.
 
     Args:
@@ -598,16 +634,19 @@ def get_folder_details(hostname: str = None, folder_id: str = None) -> str:
 # Network Tools
 @mcp.tool()
 def list_networks(
-    hostname: str = None,
-    filters: List[FilterCondition] = None,
-    group_by: str = None,
-    fields: List[str] = None,
+    hostname: Optional[str] = None,
+    filters: Optional[List[FilterCondition]] = None,
+    group_by: Optional[str] = None,
+    fields: Optional[List[str]] = None,
     limit: int = 50,
+    sort_by: Optional[str] = None,
+    descending: bool = True,
 ) -> str:
-    """List, filter, or count networks (standard and distributed portgroups).
+    """List, filter, count, or rank networks (standard and distributed portgroups).
 
-    With filters/group_by/fields an in-process engine fetches properties for
-    ALL networks in one call and returns only the filtered/aggregated result.
+    With filters/group_by/fields/sort_by an in-process engine fetches
+    properties for ALL networks in one call and returns only the
+    filtered/aggregated result.
 
     Queryable fields: name, network_id, type, vlan_id, vm_count.
     (vlan_id is only available for distributed portgroups with a plain VLAN
@@ -619,25 +658,29 @@ def list_networks(
       Distributed portgroups on VLAN 120:
         filters=[{"field": "vlan_id", "op": "eq", "value": 120}]
       Count by network type: group_by="type"
+      Most-used networks first: sort_by="vm_count"
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
         filters: list of {field, op, value} conditions, ANDed
         group_by: return only a count distribution of this field
         fields: fields shown per network (default: name, type, vlan_id)
-        limit: max rows in listing output (default 50; 0 = unlimited)
+        limit: max rows in listing or distribution output (default 50; 0 = unlimited)
+        sort_by: order rows by this field before applying limit
+        descending: sort direction (default True = biggest first)
     """
     if hostname is None:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
 
-    if filters or group_by or fields:
+    if filters or group_by or fields or sort_by:
         pv_client = PyVmomiClient(host=hostname)
         try:
             return run_inventory_query(pv_client, "network", filters=filters,
                                        group_by=group_by, fields=fields,
-                                       limit=limit)
+                                       limit=limit, sort_by=sort_by,
+                                       descending=descending)
         except Exception as e:
             return f"Error querying networks via pyVmomi: {e}"
         finally:
@@ -678,7 +721,7 @@ def list_networks(
 
 
 @mcp.tool()
-def get_network_details(hostname: str = None, network_id: str = None) -> str:
+def get_network_details(hostname: Optional[str] = None, network_id: Optional[str] = None) -> str:
     """Get detailed information about a network.
 
     Args:
@@ -723,7 +766,7 @@ def get_network_details(hostname: str = None, network_id: str = None) -> str:
 
 
 @mcp.tool()
-def get_vlan_info(hostname: str = None, vlan_query: str = "") -> str:
+def get_vlan_info(hostname: Optional[str] = None, vlan_query: str = "") -> str:
     """Get information about a VLAN by name or VLAN ID.
 
     Args:
@@ -790,7 +833,7 @@ def get_vlan_info(hostname: str = None, vlan_query: str = "") -> str:
 
 
 @mcp.tool()
-def list_vlans(hostname: str = None) -> str:
+def list_vlans(hostname: Optional[str] = None) -> str:
     """Extract and list VLAN information from network names.
 
     Args:
@@ -837,131 +880,116 @@ def list_vlans(hostname: str = None) -> str:
 
 
 @mcp.tool()
-def get_vm_disk_usage(hostname: str = None) -> str:
-    """Get disk usage information for all VMs.
+def get_vm_disk_usage(hostname: Optional[str] = None, limit: int = 15) -> str:
+    """Top VMs by space actually used on datastores (one bulk query).
+
+    Shows the biggest consumers first: disk count, committed (used) and
+    provisioned (maximum if thin disks fill up) storage per VM. For other
+    views — different sort, filters, per-VM detail — use list_vms with
+    filters/sort_by/fields, or get_vm_storage_info for a specific VM's
+    datastore placement.
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
+        limit: number of VMs shown (default 15; 0 = all)
     """
     if hostname is None:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
-    
-    client = VSphereClient(hostname)
+
+    pv_client = PyVmomiClient(host=hostname)
     try:
-        # Get all VMs
-        response = client.get("vcenter/vm")
-        vms = response.get("value", [])
-        
-        if not vms:
-            return "No virtual machines found"
-        
-        result = f"Disk Usage Report for {len(vms)} VMs:\n\n"
-        
-        for vm in vms:
-            vm_id = vm.get('vm')
-            vm_name = vm.get('name', 'Unknown')
-            
-            try:
-                # Get detailed VM information including disks
-                vm_details = client.get(f"vcenter/vm/{vm_id}")
-                vm_data = vm_details.get("value", {})
-                
-                # Get disk information
-                disks = vm_data.get("disks", [])
-                
-                result += f"• {vm_name} (ID: {vm_id})\n"
-                
-                if disks:
-                    for i, disk in enumerate(disks):
-                        capacity = disk.get("capacity", 0)
-                        if capacity > 0:
-                            # Convert bytes to GB
-                            capacity_gb = capacity / (1024**3)
-                            result += f"  Disk {i}: {capacity_gb:.1f} GB\n"
-                        else:
-                            result += f"  Disk {i}: Capacity not available\n"
-                else:
-                    result += "  No disk information available\n"
-                
-                result += "\n"
-                
-            except Exception as e:
-                result += f"• {vm_name} (ID: {vm_id}) - Error getting disk info: {str(e)}\n\n"
-        
-        return result.strip()
-        
-    except (ConnectionError, ValueError, KeyError) as e:
-        return _handle_error(e, "getting VM disk usage")
+        listing = run_inventory_query(
+            pv_client, "vm",
+            fields=["name", "disk_count", "storage_committed_gb",
+                    "storage_provisioned_gb"],
+            sort_by="storage_committed_gb", limit=limit)
+        return (f"Top VMs by used storage (committed GB on datastores):\n\n"
+                f"{listing}")
+    except Exception as e:
+        return f"Error getting VM disk usage: {e}"
     finally:
-        client.close()
+        pv_client.close()
 
 
 @mcp.tool()
-def get_vm_storage_info(hostname: str = None) -> str:
-    """Get detailed storage information for all VMs including datastore usage.
+def get_vm_storage_info(hostname: Optional[str] = None, vm_id: Optional[str] = None,
+                        limit: int = 15) -> str:
+    """Storage info: per-VM disk detail, or top storage consumers overall.
+
+    With vm_id (ID or name): that VM's disks and datastores.
+    Without vm_id: the biggest storage consumers by provisioned space,
+    via one bulk query. For other views use list_vms with
+    filters/sort_by/fields.
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
+        vm_id: Virtual machine ID or name (optional)
+        limit: number of VMs shown in the overview (default 15; 0 = all)
     """
     if hostname is None:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
-    
+
+    if vm_id is None:
+        pv_client = PyVmomiClient(host=hostname)
+        try:
+            listing = run_inventory_query(
+                pv_client, "vm",
+                fields=["name", "storage_provisioned_gb",
+                        "storage_committed_gb", "disk_count"],
+                sort_by="storage_provisioned_gb", limit=limit)
+            return (f"Top VMs by provisioned storage (committed = used on "
+                    f"datastores; provisioned = maximum if thin disks "
+                    f"fill up):\n\n{listing}")
+        except Exception as e:
+            return f"Error getting VM storage overview: {e}"
+        finally:
+            pv_client.close()
+
     client = VSphereClient(hostname)
     try:
-        # Get all VMs
-        response = client.get("vcenter/vm")
-        vms = response.get("value", [])
-        
-        if not vms:
-            return "No virtual machines found"
-        
-        result = f"Storage Information for {len(vms)} VMs:\n\n"
-        
-        for vm in vms:
-            vm_id = vm.get('vm')
-            vm_name = vm.get('name', 'Unknown')
-            
-            try:
-                # Get detailed VM information
-                vm_details = client.get(f"vcenter/vm/{vm_id}")
-                vm_data = vm_details.get("value", {})
-                
-                result += f"• {vm_name} (ID: {vm_id})\n"
-                
-                # Get disk information
-                disks = vm_data.get("disks", [])
-                if disks:
-                    for i, disk in enumerate(disks):
-                        capacity = disk.get("capacity", 0)
-                        if capacity > 0:
-                            capacity_gb = capacity / (1024**3)
-                            result += f"  Disk {i}: {capacity_gb:.1f} GB allocated\n"
-                        else:
-                            result += f"  Disk {i}: Size not available\n"
+        # If vm_id doesn't start with 'vm-', assume it's a name and look up the ID
+        if not vm_id.startswith("vm-"):
+            vms_response = client.get("vcenter/vm")
+            vms = vms_response.get("value", [])
+            vm_id_found = None
+            for vm in vms:
+                if vm.get("name", "").lower() == vm_id.lower():
+                    vm_id_found = vm.get("vm")
+                    break
+            if not vm_id_found:
+                return f"Virtual machine '{vm_id}' not found by name"
+            vm_id = vm_id_found
+
+        vm_details = client.get(f"vcenter/vm/{vm_id}")
+        vm_data = vm_details.get("value", {})
+
+        result = f"Storage Information for {vm_data.get('name', vm_id)} (ID: {vm_id}):\n\n"
+        disks = vm_data.get("disks", [])
+        if disks:
+            for i, disk in enumerate(disks):
+                # The REST detail wraps each disk as {key, value: {...}}.
+                info = disk.get("value", disk) if isinstance(disk, dict) else {}
+                capacity = info.get("capacity", 0)
+                label = info.get("label") or f"Disk {i}"
+                if capacity > 0:
+                    result += f"  {label}: {capacity / (1024**3):.1f} GB allocated\n"
                 else:
-                    result += "  No disk information available\n"
-                
-                # Get datastore information
-                datastores = vm_data.get("datastores", [])
-                if datastores:
-                    result += "  Datastores:\n"
-                    for ds in datastores:
-                        result += f"    - {ds}\n"
-                
-                result += "\n"
-                
-            except Exception as e:
-                result += f"• {vm_name} (ID: {vm_id}) - Error: {str(e)}\n\n"
-        
-        result += "\nNote: For actual disk usage percentage, VMware Tools must be installed in VMs and vRealize Operations or similar tools are needed.\n"
-        result += "This report shows allocated disk space, not actual usage."
-        
+                    result += f"  {label}: Size not available\n"
+        else:
+            result += "  No disk information available\n"
+
+        datastores = vm_data.get("datastores", [])
+        if datastores:
+            result += "  Datastores:\n"
+            for ds in datastores:
+                result += f"    - {ds}\n"
+
         return result.strip()
-        
+
     except (ConnectionError, ValueError, KeyError) as e:
         return _handle_error(e, "getting VM storage information")
     finally:
@@ -969,7 +997,7 @@ def get_vm_storage_info(hostname: str = None) -> str:
 
 
 @mcp.tool()
-def get_datastore_usage(hostname: str = None) -> str:
+def get_datastore_usage(hostname: Optional[str] = None) -> str:
     """Get datastore usage information to identify potential storage issues.
 
     Args:
@@ -1029,254 +1057,124 @@ def get_datastore_usage(hostname: str = None) -> str:
 
 
 @mcp.tool()
-def get_vm_performance_info(hostname: str = None) -> str:
-    """Get performance information for all VMs including CPU, RAM, and network.
+def get_vm_performance_info(hostname: Optional[str] = None, limit: int = 15) -> str:
+    """Top powered-on VMs by live CPU usage, with memory usage (one bulk query).
+
+    cpu_usage_mhz and memory_usage_gb are real-time usage from vCenter
+    quickStats; cpu_count/memory_mb are the allocation. For other views
+    (sort by memory, filter to a cluster, more rows) use list_vms with
+    filters/sort_by/fields.
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
+        limit: number of VMs shown (default 15; 0 = all)
     """
     if hostname is None:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
-    
-    client = VSphereClient(hostname)
+
+    pv_client = PyVmomiClient(host=hostname)
     try:
-        # Get all VMs
-        response = client.get("vcenter/vm")
-        vms = response.get("value", [])
-        
-        if not vms:
-            return "No virtual machines found"
-        
-        result = f"Performance Information for {len(vms)} VMs:\n\n"
-        
-        for vm in vms:
-            vm_id = vm.get('vm')
-            vm_name = vm.get('name', 'Unknown')
-            power_state = vm.get('power_state', 'Unknown')
-            
-            try:
-                # Get detailed VM information
-                vm_details = client.get(f"vcenter/vm/{vm_id}")
-                vm_data = vm_details.get("value", {})
-                
-                result += f"• {vm_name} (ID: {vm_id})\n"
-                result += f"  Power State: {power_state}\n"
-                
-                if power_state == "POWERED_ON":
-                    # CPU Information
-                    cpu_info = vm_data.get("cpu", {})
-                    if cpu_info:
-                        cpu_count = cpu_info.get("count", "Unknown")
-                        result += f"  CPU: {cpu_count} vCPUs\n"
-                    
-                    # Memory Information
-                    memory_info = vm_data.get("memory", {})
-                    if memory_info:
-                        memory_mb = memory_info.get("size_MiB", "Unknown")
-                        if memory_mb != "Unknown":
-                            memory_gb = memory_mb / 1024
-                            result += f"  Memory: {memory_gb:.1f} GB ({memory_mb} MB)\n"
-                        else:
-                            result += f"  Memory: {memory_mb}\n"
-                    
-                    # Network Information
-                    nics = vm_data.get("nics", [])
-                    if nics:
-                        result += f"  Network Interfaces: {len(nics)}\n"
-                        for i, nic in enumerate(nics):
-                            if isinstance(nic, dict):
-                                backing = nic.get("backing", {})
-                                if isinstance(backing, dict):
-                                    network_name = backing.get("network_name", "Unknown")
-                                    result += f"    NIC {i}: {network_name}\n"
-                    
-                    # Guest OS Information
-                    guest_os = vm_data.get("guest_OS", "Unknown")
-                    result += f"  Guest OS: {guest_os}\n"
-                    
-                else:
-                    result += f"  VM is {power_state.lower()} - performance data not available\n"
-                
-                result += "\n"
-                
-            except Exception as e:
-                result += f"• {vm_name} (ID: {vm_id}) - Error: {str(e)}\n\n"
-        
-        result += "\nNote: This shows allocated resources, not actual usage. For real-time performance metrics, vRealize Operations or similar tools are needed."
-        
-        return result.strip()
-        
-    except (ConnectionError, ValueError, KeyError) as e:
-        return _handle_error(e, "getting VM performance information")
+        listing = run_inventory_query(
+            pv_client, "vm",
+            filters=[FilterCondition(field="power_state", op="eq",
+                                     value="poweredOn")],
+            fields=["name", "cpu_usage_mhz", "cpu_count",
+                    "memory_usage_gb", "memory_mb", "host"],
+            sort_by="cpu_usage_mhz", limit=limit)
+        return f"Top powered-on VMs by CPU usage:\n\n{listing}"
+    except Exception as e:
+        return f"Error getting VM performance info: {e}"
     finally:
-        client.close()
+        pv_client.close()
 
 
 @mcp.tool()
-def get_host_performance_info(hostname: str = None) -> str:
-    """Get performance information for all ESXi hosts.
+def get_host_performance_info(hostname: Optional[str] = None, limit: int = 25) -> str:
+    """ESXi hosts ranked by live CPU usage, with capacity and load (one bulk query).
+
+    cpu_usage_mhz, memory_usage_gb, and uptime_days are real-time from
+    vCenter quickStats; cpu_cores/cpu_threads/memory_gb are the hardware
+    capacity. For other views use list_hosts with filters/sort_by/fields.
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
+        limit: number of hosts shown (default 25; 0 = all)
     """
     if hostname is None:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
-    
-    client = VSphereClient(hostname)
+
+    pv_client = PyVmomiClient(host=hostname)
     try:
-        # Get all hosts
-        response = client.get("vcenter/host")
-        hosts = response.get("value", [])
-        
-        if not hosts:
-            return "No ESXi hosts found"
-        
-        result = f"Host Performance Information for {len(hosts)} hosts:\n\n"
-        
-        for host in hosts:
-            host_id = host.get('host')
-            host_name = host.get('name', 'Unknown')
-            connection_state = host.get('connection_state', 'Unknown')
-            power_state = host.get('power_state', 'Unknown')
-            
-            result += f"• {host_name} (ID: {host_id})\n"
-            result += f"  Connection State: {connection_state}\n"
-            result += f"  Power State: {power_state}\n"
-            
-            if connection_state == "CONNECTED":
-                try:
-                    # Get detailed host information
-                    host_details = client.get(f"vcenter/host/{host_id}")
-                    host_data = host_details.get("value", {})
-                    
-                    # CPU Information
-                    cpu_info = host_data.get("cpu", {})
-                    if cpu_info:
-                        cpu_count = cpu_info.get("count", "Unknown")
-                        result += f"  CPU: {cpu_count} physical CPUs\n"
-                    
-                    # Memory Information
-                    memory_info = host_data.get("memory", {})
-                    if memory_info:
-                        memory_mb = memory_info.get("size_MiB", "Unknown")
-                        if memory_mb != "Unknown":
-                            memory_gb = memory_mb / 1024
-                            result += f"  Memory: {memory_gb:.1f} GB ({memory_mb} MB)\n"
-                        else:
-                            result += f"  Memory: {memory_mb}\n"
-                    
-                    # Network Information
-                    nics = host_data.get("nics", [])
-                    if nics:
-                        result += f"  Network Interfaces: {len(nics)}\n"
-                        for i, nic in enumerate(nics):
-                            if isinstance(nic, dict):
-                                nic_name = nic.get("device", "Unknown")
-                                result += f"    NIC {i}: {nic_name}\n"
-                    
-                except Exception as e:
-                    result += f"  Error getting detailed info: {str(e)}\n"
-            else:
-                result += f"  Host is {connection_state.lower()} - detailed info not available\n"
-            
-            result += "\n"
-        
-        result += "\nNote: This shows host hardware configuration, not real-time performance metrics."
-        
-        return result.strip()
-        
-    except (ConnectionError, ValueError, KeyError) as e:
-        return _handle_error(e, "getting host performance information")
+        listing = run_inventory_query(
+            pv_client, "host",
+            fields=["name", "cpu_usage_mhz", "cpu_cores", "memory_usage_gb",
+                    "memory_gb", "vm_count", "uptime_days"],
+            sort_by="cpu_usage_mhz", limit=limit)
+        return f"Hosts by CPU usage:\n\n{listing}"
+    except Exception as e:
+        return f"Error getting host performance info: {e}"
     finally:
-        client.close()
+        pv_client.close()
 
 
 @mcp.tool()
-def get_vms_with_high_resource_usage(hostname: str = None) -> str:
-    """Get VMs that might have high resource usage based on configuration.
+def get_vms_with_high_resource_usage(hostname: Optional[str] = None,
+                                     cpu_threshold: int = 8,
+                                     memory_gb_threshold: int = 16,
+                                     limit: int = 15) -> str:
+    """Powered-on VMs with large CPU/memory allocations (two bulk queries).
+
+    Lists VMs at or above the thresholds, biggest first, with live usage
+    (cpu_usage_mhz / memory_usage_gb) next to the allocation. For custom
+    queries use list_vms with filters/sort_by.
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
+        cpu_threshold: minimum vCPU count to report (default 8)
+        memory_gb_threshold: minimum memory in GB to report (default 16)
+        limit: max VMs per section (default 15; 0 = all)
     """
     if hostname is None:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
-    
-    client = VSphereClient(hostname)
+
+    powered_on = FilterCondition(field="power_state", op="eq",
+                                 value="poweredOn")
+    pv_client = PyVmomiClient(host=hostname)
     try:
-        # Get all VMs
-        response = client.get("vcenter/vm")
-        vms = response.get("value", [])
-        
-        if not vms:
-            return "No virtual machines found"
-        
-        result = f"VMs with High Resource Configuration:\n\n"
-        high_cpu_vms = []
-        high_memory_vms = []
-        
-        for vm in vms:
-            vm_id = vm.get('vm')
-            vm_name = vm.get('name', 'Unknown')
-            power_state = vm.get('power_state', 'Unknown')
-            
-            if power_state == "POWERED_ON":
-                try:
-                    # Get detailed VM information
-                    vm_details = client.get(f"vcenter/vm/{vm_id}")
-                    vm_data = vm_details.get("value", {})
-                    
-                    # Check CPU
-                    cpu_info = vm_data.get("cpu", {})
-                    if cpu_info:
-                        cpu_count = cpu_info.get("count", 0)
-                        if cpu_count >= 8:  # VMs with 8+ vCPUs
-                            high_cpu_vms.append(f"{vm_name} ({cpu_count} vCPUs)")
-                    
-                    # Check Memory
-                    memory_info = vm_data.get("memory", {})
-                    if memory_info:
-                        memory_mb = memory_info.get("size_MiB", 0)
-                        if memory_mb >= 16384:  # VMs with 16GB+ RAM
-                            memory_gb = memory_mb / 1024
-                            high_memory_vms.append(f"{vm_name} ({memory_gb:.1f} GB)")
-                    
-                except Exception as e:
-                    continue
-        
-        if high_cpu_vms:
-            result += "🔴 VMs with High CPU Configuration (8+ vCPUs):\n"
-            for vm in high_cpu_vms:
-                result += f"  - {vm}\n"
-            result += "\n"
-        
-        if high_memory_vms:
-            result += "🔴 VMs with High Memory Configuration (16GB+ RAM):\n"
-            for vm in high_memory_vms:
-                result += f"  - {vm}\n"
-            result += "\n"
-        
-        if not high_cpu_vms and not high_memory_vms:
-            result += "✅ No VMs found with high resource configuration.\n"
-        
-        result += "\nNote: This shows resource allocation, not actual usage. High allocation doesn't necessarily mean high usage."
-        
-        return result.strip()
-        
-    except (ConnectionError, ValueError, KeyError) as e:
-        return _handle_error(e, "getting VMs with high resource usage")
+        high_cpu = run_inventory_query(
+            pv_client, "vm",
+            filters=[powered_on,
+                     FilterCondition(field="cpu_count", op="gte",
+                                     value=cpu_threshold)],
+            fields=["name", "cpu_count", "cpu_usage_mhz", "host"],
+            sort_by="cpu_count", limit=limit)
+        high_memory = run_inventory_query(
+            pv_client, "vm",
+            filters=[powered_on,
+                     FilterCondition(field="memory_mb", op="gte",
+                                     value=memory_gb_threshold * 1024)],
+            fields=["name", "memory_mb", "memory_usage_gb", "host"],
+            sort_by="memory_mb", limit=limit)
+        return (f"Powered-on VMs with {cpu_threshold}+ vCPUs:\n\n{high_cpu}"
+                f"\n\nPowered-on VMs with {memory_gb_threshold}+ GB memory:"
+                f"\n\n{high_memory}"
+                "\n\nNote: cpu_count/memory_mb are allocations; "
+                "cpu_usage_mhz/memory_usage_gb show actual current usage.")
+    except Exception as e:
+        return f"Error getting VMs with high resource usage: {e}"
     finally:
-        client.close()
+        pv_client.close()
 
 
 # Snapshot Management Tools
 @mcp.tool()
-def list_vm_snapshots(vm_id: str, hostname: str = None) -> str:
+def list_vm_snapshots(vm_id: str, hostname: Optional[str] = None) -> str:
     """List all snapshots for a specific VM.
 
     Args:
@@ -1287,39 +1185,39 @@ def list_vm_snapshots(vm_id: str, hostname: str = None) -> str:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
-    
+
     client = VSphereClient(hostname)
     try:
         # If vm_id doesn't start with 'vm-', assume it's a name and look up the ID
         if not vm_id.startswith("vm-"):
             vms_response = client.get("vcenter/vm")
             vms = vms_response.get("value", [])
-            
+
             vm_id_found = None
             for vm in vms:
                 if vm.get("name", "").lower() == vm_id.lower():
                     vm_id_found = vm.get("vm")
                     break
-            
+
             if not vm_id_found:
                 return f"Virtual machine '{vm_id}' not found by name"
             vm_id = vm_id_found
-        
+
         # Get VM snapshots
         response = client.get(f"vcenter/vm/{vm_id}/snapshot")
         snapshots = response.get("value", [])
-        
+
         if not snapshots:
             return f"No snapshots found for VM {vm_id}"
-        
+
         result = f"Snapshots for VM {vm_id}:\n\n"
         for snapshot in snapshots:
             result += f"• {snapshot.get('name', 'Unknown')} (ID: {snapshot.get('snapshot')})\n"
             result += f"  Created: {snapshot.get('create_time', 'Unknown')}\n"
             result += f"  State: {snapshot.get('state', 'Unknown')}\n\n"
-        
+
         return result.strip()
-        
+
     except (ConnectionError, ValueError, KeyError) as e:
         return _handle_error(e, f"listing snapshots for VM {vm_id}")
     finally:
@@ -1327,7 +1225,7 @@ def list_vm_snapshots(vm_id: str, hostname: str = None) -> str:
 
 
 @mcp.tool()
-def create_vm_snapshot(vm_id: str, snapshot_name: str, description: str = "", hostname: str = None) -> str:
+def create_vm_snapshot(vm_id: str, snapshot_name: str, description: str = "", hostname: Optional[str] = None) -> str:
     """Create a snapshot for a specific VM.
 
     Args:
@@ -1340,24 +1238,24 @@ def create_vm_snapshot(vm_id: str, snapshot_name: str, description: str = "", ho
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
-    
+
     client = VSphereClient(hostname)
     try:
         # If vm_id doesn't start with 'vm-', assume it's a name and look up the ID
         if not vm_id.startswith("vm-"):
             vms_response = client.get("vcenter/vm")
             vms = vms_response.get("value", [])
-            
+
             vm_id_found = None
             for vm in vms:
                 if vm.get("name", "").lower() == vm_id.lower():
                     vm_id_found = vm.get("vm")
                     break
-            
+
             if not vm_id_found:
                 return f"Virtual machine '{vm_id}' not found by name"
             vm_id = vm_id_found
-        
+
         # Create snapshot
         snapshot_data = {
             "name": snapshot_name,
@@ -1365,10 +1263,10 @@ def create_vm_snapshot(vm_id: str, snapshot_name: str, description: str = "", ho
             "memory": True,
             "quiesce": True
         }
-        
+
         client.post(f"vcenter/vm/{vm_id}/snapshot", snapshot_data)
         return f"Snapshot '{snapshot_name}' created successfully for VM {vm_id}"
-        
+
     except (ConnectionError, ValueError, KeyError) as e:
         return _handle_error(e, f"creating snapshot for VM {vm_id}")
     finally:
@@ -1377,7 +1275,7 @@ def create_vm_snapshot(vm_id: str, snapshot_name: str, description: str = "", ho
 
 # Template Management Tools
 @mcp.tool()
-def list_templates(hostname: str = None) -> str:
+def list_templates(hostname: Optional[str] = None) -> str:
     """List all VM templates.
 
     Args:
@@ -1420,7 +1318,7 @@ def list_templates(hostname: str = None) -> str:
 
 # Advanced Monitoring Tools
 @mcp.tool()
-def get_vm_events(vm_id: str, hostname: str = None) -> str:
+def get_vm_events(vm_id: str, hostname: Optional[str] = None) -> str:
     """Get recent events for a specific VM.
 
     Args:
@@ -1475,7 +1373,7 @@ def get_vm_events(vm_id: str, hostname: str = None) -> str:
 
 
 @mcp.tool()
-def get_alarms(hostname: str = None) -> str:
+def get_alarms(hostname: Optional[str] = None) -> str:
     """Get active alarms in the vSphere environment.
 
     Args:
@@ -1516,34 +1414,42 @@ def get_alarms(hostname: str = None) -> str:
 
 # Network Management Tools
 @mcp.tool()
-def get_port_groups(hostname: str = None) -> str:
-    """Get all port groups in the vSphere environment.
+def get_port_groups(hostname: Optional[str] = None, limit: int = 50) -> str:
+    """Get port groups in the vSphere environment.
+
+    For filtering, counting, or VLAN lookups prefer list_networks with
+    filters/group_by.
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
+        limit: max port groups shown (default 50; 0 = unlimited)
     """
     if hostname is None:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
-    
+
     client = VSphereClient(hostname)
     try:
         # Get port groups (this might be available through network endpoints)
         response = client.get("vcenter/network")
         networks = response.get("value", [])
-        
+
         if not networks:
             return "No networks found"
-        
-        result = f"Network Port Groups ({len(networks)}):\n\n"
-        for network in networks:
+
+        shown = networks if limit == 0 else networks[:limit]
+        result = f"Network Port Groups ({len(networks)})"
+        if len(shown) < len(networks):
+            result += f" (showing {len(shown)} — use list_networks filters or raise limit)"
+        result += ":\n\n"
+        for network in shown:
             result += f"• {network.get('name', 'Unknown')}\n"
             result += f"  Type: {network.get('type', 'Unknown')}\n"
             result += f"  ID: {network.get('network', 'Unknown')}\n\n"
-        
+
         return result.strip()
-        
+
     except (ConnectionError, ValueError, KeyError) as e:
         return _handle_error(e, "getting port groups")
     finally:
@@ -1552,8 +1458,12 @@ def get_port_groups(hostname: str = None) -> str:
 
 # Reporting and Analytics Tools
 @mcp.tool()
-def generate_vm_report(hostname: str = None) -> str:
-    """Generate a comprehensive report of all VMs.
+def generate_vm_report(hostname: Optional[str] = None) -> str:
+    """Compact environment report: totals, distributions, top consumers.
+
+    Fixed-size summary built from a few bulk queries — never a full VM
+    dump. Drill into any section with list_vms / list_datastores using
+    filters, group_by, or sort_by.
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
@@ -1562,65 +1472,71 @@ def generate_vm_report(hostname: str = None) -> str:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
-    
-    client = VSphereClient(hostname)
+
+    pv_client = PyVmomiClient(host=hostname)
     try:
-        # Get all VMs
-        response = client.get("vcenter/vm")
-        vms = response.get("value", [])
-        
-        if not vms:
-            return "No virtual machines found"
-        
-        # Get datastores for storage info
-        ds_response = client.get("vcenter/datastore")
-        datastores = ds_response.get("value", [])
-        
-        # Get hosts for host info
-        host_response = client.get("vcenter/host")
-        hosts = host_response.get("value", [])
-        
-        result = f"=== vSphere VM Report ===\n"
-        result += f"Generated: {os.popen('date').read().strip()}\n"
-        result += f"Total VMs: {len(vms)}\n"
-        result += f"Total Hosts: {len(hosts)}\n"
-        result += f"Total Datastores: {len(datastores)}\n\n"
-        
-        # VM Summary
-        powered_on = sum(1 for vm in vms if vm.get('power_state') == 'POWERED_ON')
-        powered_off = len(vms) - powered_on
-        
-        result += f"=== VM Summary ===\n"
-        result += f"Powered On: {powered_on}\n"
-        result += f"Powered Off: {powered_off}\n\n"
-        
-        # Detailed VM List
-        result += f"=== Detailed VM List ===\n"
-        for vm in vms:
-            vm_name = vm.get('name', 'Unknown')
-            power_state = vm.get('power_state', 'Unknown')
-            result += f"• {vm_name} - {power_state}\n"
-        
-        result += f"\n=== Datastore Summary ===\n"
-        for ds in datastores:
-            ds_name = ds.get('name', 'Unknown')
-            capacity = ds.get("capacity", 0)
-            free_space = ds.get("free_space", 0)
-            if capacity > 0:
-                used_pct = ((capacity - free_space) / capacity * 100)
-                result += f"• {ds_name}: {used_pct:.1f}% used\n"
-        
-        return result.strip()
-        
-    except (ConnectionError, ValueError, KeyError) as e:
-        return _handle_error(e, "generating VM report")
+        vm_rows = fetch_inventory(
+            pv_client, "vm",
+            ["name", "power_state", "template", "guest_os", "cpu_count",
+             "memory_mb", "storage_committed_gb", "snapshot_count"])
+        host_rows = fetch_inventory(pv_client, "host", ["name"])
+        ds_rows = fetch_inventory(
+            pv_client, "datastore",
+            ["name", "capacity_gb", "free_gb", "free_pct"])
+    except Exception as e:
+        return f"Error generating VM report: {e}"
     finally:
-        client.close()
+        pv_client.close()
+
+    templates = [r for r in vm_rows if r.get("template")]
+    vms = [r for r in vm_rows if not r.get("template")]
+    powered_on = [r for r in vms if str(r.get("power_state")) == "poweredOn"]
+
+    result = "=== vSphere VM Report ===\n"
+    result += f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+    result += f"Total VMs: {len(vms)} (+ {len(templates)} templates)\n"
+    result += f"Total Hosts: {len(host_rows)}\n"
+    result += f"Total Datastores: {len(ds_rows)}\n\n"
+
+    result += "=== VM Summary ===\n"
+    result += f"Powered On: {len(powered_on)}\n"
+    result += f"Powered Off: {len(vms) - len(powered_on)}\n"
+    result += (f"vCPUs allocated (powered-on): "
+               f"{sum(r.get('cpu_count') or 0 for r in powered_on)}\n")
+    result += (f"Memory allocated (powered-on): "
+               f"{sum(r.get('memory_mb') or 0 for r in powered_on) / 1024:.1f} GB\n")
+    result += (f"VMs with snapshots: "
+               f"{sum(1 for r in vms if (r.get('snapshot_count') or 0) > 0)}\n\n")
+
+    result += "=== Top Guest OS (count) ===\n"
+    for value, count in aggregate(vms, "guest_os")[:5]:
+        result += f"• {value}: {count}\n"
+
+    result += "\n=== Top 5 VMs by used storage ===\n"
+    for row in sort_rows(vms, "storage_committed_gb")[:5]:
+        result += f"• {row.get('name')}: {row.get('storage_committed_gb')} GB\n"
+
+    result += "\n=== Datastore Summary (lowest free space first) ===\n"
+    ds_sorted = sort_rows(ds_rows, "free_pct", descending=False)
+    for row in ds_sorted[:5]:
+        used_pct = (100 - row["free_pct"]) if row.get("free_pct") is not None else None
+        used = f"{used_pct:.1f}% used" if used_pct is not None else "usage unknown"
+        result += (f"• {row.get('name')}: {used} "
+                   f"({row.get('free_gb')} of {row.get('capacity_gb')} GB free)\n")
+    if len(ds_sorted) > 5:
+        result += (f"• … and {len(ds_sorted) - 5} more datastores "
+                   f"(see list_datastores)\n")
+
+    return result.strip()
 
 
 @mcp.tool()
-def get_resource_utilization_summary(hostname: str = None) -> str:
+def get_resource_utilization_summary(hostname: Optional[str] = None) -> str:
     """Get a summary of resource utilization across the vSphere environment.
+
+    Fixed-size summary from three bulk queries: vCPU/memory allocation of
+    powered-on VMs vs. host capacity and live host usage, plus datastore
+    totals.
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
@@ -1629,118 +1545,65 @@ def get_resource_utilization_summary(hostname: str = None) -> str:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
-    
-    client = VSphereClient(hostname)
+
+    pv_client = PyVmomiClient(host=hostname)
     try:
-        # Get all VMs
-        vm_response = client.get("vcenter/vm")
-        vms = vm_response.get("value", [])
-        
-        # Get all hosts
-        host_response = client.get("vcenter/host")
-        hosts = host_response.get("value", [])
-        
-        # Get all datastores
-        ds_response = client.get("vcenter/datastore")
-        datastores = ds_response.get("value", [])
-        
-        result = f"=== Resource Utilization Summary ===\n\n"
-        
-        # CPU Summary
-        total_vcpus = 0
-        total_physical_cpus = 0
-        
-        for vm in vms:
-            if vm.get('power_state') == 'POWERED_ON':
-                try:
-                    vm_details = client.get(f"vcenter/vm/{vm.get('vm')}")
-                    vm_data = vm_details.get("value", {})
-                    cpu_info = vm_data.get("cpu", {})
-                    if cpu_info:
-                        total_vcpus += cpu_info.get("count", 0)
-                except:
-                    continue
-        
-        for host in hosts:
-            if host.get('connection_state') == 'CONNECTED':
-                try:
-                    host_details = client.get(f"vcenter/host/{host.get('host')}")
-                    host_data = host_details.get("value", {})
-                    cpu_info = host_data.get("cpu", {})
-                    if cpu_info:
-                        total_physical_cpus += cpu_info.get("count", 0)
-                except:
-                    continue
-        
-        result += f"CPU Utilization:\n"
-        result += f"  Total vCPUs allocated: {total_vcpus}\n"
-        result += f"  Total physical CPUs: {total_physical_cpus}\n"
-        if total_physical_cpus > 0:
-            cpu_ratio = total_vcpus / total_physical_cpus
-            result += f"  vCPU to Physical CPU ratio: {cpu_ratio:.2f}:1\n"
-        result += "\n"
-        
-        # Memory Summary
-        total_vm_memory = 0
-        total_host_memory = 0
-        
-        for vm in vms:
-            if vm.get('power_state') == 'POWERED_ON':
-                try:
-                    vm_details = client.get(f"vcenter/vm/{vm.get('vm')}")
-                    vm_data = vm_details.get("value", {})
-                    memory_info = vm_data.get("memory", {})
-                    if memory_info:
-                        total_vm_memory += memory_info.get("size_MiB", 0)
-                except:
-                    continue
-        
-        for host in hosts:
-            if host.get('connection_state') == 'CONNECTED':
-                try:
-                    host_details = client.get(f"vcenter/host/{host.get('host')}")
-                    host_data = host_details.get("value", {})
-                    memory_info = host_data.get("memory", {})
-                    if memory_info:
-                        total_host_memory += memory_info.get("size_MiB", 0)
-                except:
-                    continue
-        
-        result += f"Memory Utilization:\n"
-        result += f"  Total VM memory allocated: {total_vm_memory / 1024:.1f} GB\n"
-        result += f"  Total host memory: {total_host_memory / 1024:.1f} GB\n"
-        if total_host_memory > 0:
-            memory_ratio = (total_vm_memory / total_host_memory) * 100
-            result += f"  Memory overcommitment: {memory_ratio:.1f}%\n"
-        result += "\n"
-        
-        # Storage Summary
-        total_capacity = 0
-        total_free = 0
-        
-        for ds in datastores:
-            total_capacity += ds.get("capacity", 0)
-            total_free += ds.get("free_space", 0)
-        
-        total_used = total_capacity - total_free
-        used_percentage = (total_used / total_capacity * 100) if total_capacity > 0 else 0
-        
-        result += f"Storage Utilization:\n"
-        result += f"  Total capacity: {total_capacity / (1024**3):.1f} GB\n"
-        result += f"  Total used: {total_used / (1024**3):.1f} GB ({used_percentage:.1f}%)\n"
-        result += f"  Total free: {total_free / (1024**3):.1f} GB\n"
-        
-        return result.strip()
-        
-    except (ConnectionError, ValueError, KeyError) as e:
-        return _handle_error(e, "getting resource utilization summary")
+        vm_rows = fetch_inventory(
+            pv_client, "vm", ["power_state", "template", "cpu_count",
+                              "memory_mb"])
+        host_rows = fetch_inventory(
+            pv_client, "host", ["cpu_cores", "cpu_threads", "memory_gb",
+                                "cpu_usage_mhz", "memory_usage_gb"])
+        ds_rows = fetch_inventory(pv_client, "datastore",
+                                  ["capacity_gb", "free_gb"])
+    except Exception as e:
+        return f"Error getting resource utilization summary: {e}"
     finally:
-        client.close()
+        pv_client.close()
+
+    powered_on = [r for r in vm_rows
+                  if not r.get("template")
+                  and str(r.get("power_state")) == "poweredOn"]
+    total_vcpus = sum(r.get("cpu_count") or 0 for r in powered_on)
+    total_vm_memory_gb = sum(r.get("memory_mb") or 0 for r in powered_on) / 1024
+    total_cores = sum(r.get("cpu_cores") or 0 for r in host_rows)
+    total_threads = sum(r.get("cpu_threads") or 0 for r in host_rows)
+    total_host_memory_gb = sum(r.get("memory_gb") or 0 for r in host_rows)
+    host_cpu_usage_ghz = sum(r.get("cpu_usage_mhz") or 0 for r in host_rows) / 1000
+    host_memory_usage_gb = sum(r.get("memory_usage_gb") or 0 for r in host_rows)
+    total_capacity_gb = sum(r.get("capacity_gb") or 0 for r in ds_rows)
+    total_free_gb = sum(r.get("free_gb") or 0 for r in ds_rows)
+    total_used_gb = total_capacity_gb - total_free_gb
+
+    result = "=== Resource Utilization Summary ===\n\n"
+    result += "CPU:\n"
+    result += f"  vCPUs allocated (powered-on VMs): {total_vcpus}\n"
+    result += f"  Physical cores: {total_cores} ({total_threads} threads)\n"
+    if total_cores:
+        result += f"  vCPU to core ratio: {total_vcpus / total_cores:.2f}:1\n"
+    result += f"  Current host CPU usage: {host_cpu_usage_ghz:.1f} GHz\n\n"
+
+    result += "Memory:\n"
+    result += f"  VM memory allocated (powered-on): {total_vm_memory_gb:.1f} GB\n"
+    result += f"  Host memory capacity: {total_host_memory_gb:.1f} GB\n"
+    if total_host_memory_gb:
+        result += (f"  Allocation vs capacity: "
+                   f"{total_vm_memory_gb / total_host_memory_gb * 100:.1f}%\n")
+    result += f"  Current host memory usage: {host_memory_usage_gb:.1f} GB\n\n"
+
+    result += "Storage:\n"
+    result += f"  Total capacity: {total_capacity_gb:.1f} GB\n"
+    if total_capacity_gb:
+        result += (f"  Total used: {total_used_gb:.1f} GB "
+                   f"({total_used_gb / total_capacity_gb * 100:.1f}%)\n")
+    result += f"  Total free: {total_free_gb:.1f} GB"
+
+    return result.strip()
 
 
 # Automation Tools
 @mcp.tool()
-def bulk_power_operations(operation: str, vm_list: str, hostname: str = None) -> str:
+def bulk_power_operations(operation: str, vm_list: str, hostname: Optional[str] = None) -> str:
     """Perform bulk power operations on multiple VMs.
 
     Args:
@@ -1803,7 +1666,7 @@ def bulk_power_operations(operation: str, vm_list: str, hostname: str = None) ->
 
 # Destructive Operations with Confirmation
 @mcp.tool()
-def delete_vm_snapshot(vm_id: str, snapshot_id: str, confirm: bool = False, hostname: str = None) -> str:
+def delete_vm_snapshot(vm_id: str, snapshot_id: str, confirm: bool = False, hostname: Optional[str] = None) -> str:
     """Delete a snapshot for a specific VM. REQUIRES CONFIRMATION.
 
     Args:
@@ -1814,33 +1677,33 @@ def delete_vm_snapshot(vm_id: str, snapshot_id: str, confirm: bool = False, host
     """
     if not confirm:
         return f"⚠️  DESTRUCTIVE OPERATION: Delete snapshot {snapshot_id} for VM {vm_id}\n\nThis operation cannot be undone!\n\nTo proceed, call this function again with confirm=True"
-    
+
     if hostname is None:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
-    
+
     client = VSphereClient(hostname)
     try:
         # If vm_id doesn't start with 'vm-', assume it's a name and look up the ID
         if not vm_id.startswith("vm-"):
             vms_response = client.get("vcenter/vm")
             vms = vms_response.get("value", [])
-            
+
             vm_id_found = None
             for vm in vms:
                 if vm.get("name", "").lower() == vm_id.lower():
                     vm_id_found = vm.get("vm")
                     break
-            
+
             if not vm_id_found:
                 return f"Virtual machine '{vm_id}' not found by name"
             vm_id = vm_id_found
-        
+
         # Delete snapshot
         client.delete(f"vcenter/vm/{vm_id}/snapshot/{snapshot_id}")
         return f"✅ Snapshot {snapshot_id} deleted successfully for VM {vm_id}"
-        
+
     except (ConnectionError, ValueError, KeyError) as e:
         return _handle_error(e, f"deleting snapshot {snapshot_id} for VM {vm_id}")
     finally:
@@ -1848,7 +1711,7 @@ def delete_vm_snapshot(vm_id: str, snapshot_id: str, confirm: bool = False, host
 
 
 @mcp.tool()
-def delete_vm(vm_id: str, confirm: bool = False, hostname: str = None) -> str:
+def delete_vm(vm_id: str, confirm: bool = False, hostname: Optional[str] = None) -> str:
     """Delete a virtual machine. REQUIRES CONFIRMATION.
 
     Args:
@@ -1892,7 +1755,7 @@ def delete_vm(vm_id: str, confirm: bool = False, hostname: str = None) -> str:
 
 
 @mcp.tool()
-def modify_vm_resources(vm_id: str, cpu_count: int = None, memory_gb: int = None, confirm: bool = False, hostname: str = None) -> str:
+def modify_vm_resources(vm_id: str, cpu_count: Optional[int] = None, memory_gb: Optional[int] = None, confirm: bool = False, hostname: Optional[str] = None) -> str:
     """Modify VM resources (CPU and/or Memory). REQUIRES CONFIRMATION.
 
     Args:
@@ -1963,7 +1826,7 @@ def modify_vm_resources(vm_id: str, cpu_count: int = None, memory_gb: int = None
 
 
 @mcp.tool()
-def bulk_delete_vms(vm_list: str, confirm: bool = False, hostname: str = None) -> str:
+def bulk_delete_vms(vm_list: str, confirm: bool = False, hostname: Optional[str] = None) -> str:
     """Delete multiple VMs. REQUIRES CONFIRMATION.
 
     Args:
@@ -2019,7 +1882,7 @@ def bulk_delete_vms(vm_list: str, confirm: bool = False, hostname: str = None) -
 
 
 @mcp.tool()
-def force_power_off_vm(vm_id: str, confirm: bool = False, hostname: str = None) -> str:
+def force_power_off_vm(vm_id: str, confirm: bool = False, hostname: Optional[str] = None) -> str:
     """Force power off a virtual machine (equivalent to pulling the power cord). REQUIRES CONFIRMATION.
 
     Args:
@@ -2066,7 +1929,7 @@ def force_power_off_vm(vm_id: str, confirm: bool = False, hostname: str = None) 
 
 
 @mcp.tool()
-def list_datacenters_pyvmomi(hostname: str = None) -> str:
+def list_datacenters_pyvmomi(hostname: Optional[str] = None) -> str:
     """List all datacenters using pyVmomi (direct SOAP connection).
 
     Args:
@@ -2090,18 +1953,21 @@ def list_datacenters_pyvmomi(hostname: str = None) -> str:
 
 @mcp.tool()
 def list_clusters_pyvmomi(
-    datacenter: str = None,
-    hostname: str = None,
-    filters: List[FilterCondition] = None,
-    group_by: str = None,
-    fields: List[str] = None,
+    datacenter: Optional[str] = None,
+    hostname: Optional[str] = None,
+    filters: Optional[List[FilterCondition]] = None,
+    group_by: Optional[str] = None,
+    fields: Optional[List[str]] = None,
     limit: int = 50,
+    sort_by: Optional[str] = None,
+    descending: bool = True,
 ) -> str:
-    """List, filter, or count clusters using pyVmomi.
+    """List, filter, count, or rank clusters using pyVmomi.
 
-    With filters/group_by/fields an in-process engine fetches properties for
-    ALL clusters in one call and returns only the filtered/aggregated result;
-    datacenter is then optional (omit to query every datacenter).
+    With filters/group_by/fields/sort_by an in-process engine fetches
+    properties for ALL clusters in one call and returns only the
+    filtered/aggregated result; datacenter is then optional (omit to query
+    every datacenter).
 
     Queryable fields: name, cluster_id, host_count, effective_host_count,
     total_cpu_ghz, total_memory_gb, drs_enabled, ha_enabled, overall_status.
@@ -2112,15 +1978,18 @@ def list_clusters_pyvmomi(
       Clusters without DRS:
         filters=[{"field": "drs_enabled", "op": "eq", "value": false}]
       Host count per cluster: fields=["name", "host_count"]
+      Largest clusters first: sort_by="total_memory_gb"
 
     Args:
         datacenter: Datacenter name (required for the basic listing;
-            optional when using filters/group_by/fields)
+            optional when using filters/group_by/fields/sort_by)
         hostname: vSphere hostname (optional)
         filters: list of {field, op, value} conditions, ANDed
         group_by: return only a count distribution of this field
         fields: fields shown per cluster (default: name, host_count, drs_enabled, ha_enabled)
-        limit: max rows in listing output (default 50; 0 = unlimited)
+        limit: max rows in listing or distribution output (default 50; 0 = unlimited)
+        sort_by: order rows by this field before applying limit
+        descending: sort direction (default True = biggest first)
     """
     client = PyVmomiClient(host=hostname)
     try:
@@ -2131,10 +2000,11 @@ def list_clusters_pyvmomi(
                 return f"Datacenter '{datacenter}' not found."
             container = dc.hostFolder
 
-        if filters or group_by or fields:
+        if filters or group_by or fields or sort_by:
             return run_inventory_query(client, "cluster", filters=filters,
                                        group_by=group_by, fields=fields,
-                                       limit=limit, container=container)
+                                       limit=limit, container=container,
+                                       sort_by=sort_by, descending=descending)
 
         if not datacenter:
             return "Error: datacenter name is required."
@@ -2163,7 +2033,7 @@ def list_clusters_pyvmomi(
 
 
 @mcp.tool()
-def find_template_pyvmomi(name: str, datacenter: str = None, hostname: str = None) -> str:
+def find_template_pyvmomi(name: str, datacenter: Optional[str] = None, hostname: Optional[str] = None) -> str:
     """Find a VM template by name using pyVmomi PropertyCollector.
 
     Args:
@@ -2232,7 +2102,7 @@ def clone_vm(
     target_datacenter: str = "",
     network_name: str = "",
     confirm: bool = False,
-    hostname: str = None,
+    hostname: Optional[str] = None,
 ) -> str:
     """Clone a VM from a template using pyVmomi.
 
@@ -2408,7 +2278,7 @@ def clone_vm(
 
 
 @mcp.tool()
-def get_vm_networks_pyvmomi(vm_name: str, hostname: str = None) -> str:
+def get_vm_networks_pyvmomi(vm_name: str, hostname: Optional[str] = None) -> str:
     """Get network adapter details of a VM using pyVmomi.
 
     Args:

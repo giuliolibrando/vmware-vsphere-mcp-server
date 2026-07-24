@@ -74,6 +74,30 @@ def apply_filters(rows: list, filters: list) -> list:
             if all(_matches(row.get(c.field), c) for c in filters)]
 
 
+def sort_rows(rows: list, sort_by: str, descending: bool = True) -> list:
+    """Order rows by sort_by; rows with a missing value go last either way.
+
+    Sorts numerically when every present value is numeric (including
+    prefix-number strings like 'vmx-13'), otherwise case-insensitively
+    as strings.
+    """
+    present = [row for row in rows if row.get(sort_by) is not None]
+    absent = [row for row in rows if row.get(sort_by) is None]
+
+    def numeric_key(row) -> float:
+        value = _numeric(row[sort_by])
+        return value if value is not None else 0.0
+
+    def string_key(row) -> str:
+        return str(row[sort_by]).lower()
+
+    if present and all(_numeric(row[sort_by]) is not None for row in present):
+        ordered = sorted(present, key=numeric_key, reverse=descending)
+    else:
+        ordered = sorted(present, key=string_key, reverse=descending)
+    return ordered + absent
+
+
 # ── Field maps ───────────────────────────────────────────────────
 # One curated dict per object type: LLM-friendly field name → which
 # PropertyCollector paths to fetch and how to turn the raw values into a
@@ -129,6 +153,21 @@ def _ds_free_pct(props, ctx):
     return round(free / capacity * 100, 1)
 
 
+def _vm_provisioned_gb(props, ctx):
+    committed = props.get("summary.storage.committed")
+    if committed is None:
+        return None
+    return _gb(committed + (props.get("summary.storage.uncommitted") or 0))
+
+
+def _vm_disk_count(props, ctx):
+    devices = props.get("config.hardware.device")
+    if devices is None:
+        return None
+    return sum(1 for device in devices
+               if isinstance(device, vim.vm.device.VirtualDisk))
+
+
 def _network_vlan(props, ctx):
     # Plain VLAN ID on a distributed portgroup only; trunk/PVLAN and standard
     # portgroups yield None (best-effort per spec).
@@ -158,11 +197,22 @@ VM_FIELDS = {
     "host": {"paths": ["runtime.host"], "extract": _vm_host},
     "cluster": {"paths": ["runtime.host"], "extract": _vm_cluster},
     "storage_committed_gb": _direct("summary.storage.committed", _gb),
+    "storage_provisioned_gb": {
+        "paths": ["summary.storage.committed", "summary.storage.uncommitted"],
+        "extract": _vm_provisioned_gb,
+    },
+    "disk_count": {"paths": ["config.hardware.device"],
+                   "extract": _vm_disk_count},
     "snapshot_count": {
         "paths": ["snapshot.rootSnapshotList"],
         "extract": lambda p, c: _snapshot_count(p.get("snapshot.rootSnapshotList")),
     },
     "boot_time": _direct("runtime.bootTime", str),
+    "cpu_usage_mhz": _direct("summary.quickStats.overallCpuUsage"),
+    "memory_usage_gb": _direct("summary.quickStats.hostMemoryUsage",
+                               lambda v: round(v / 1024, 1)),
+    "uptime_days": _direct("summary.quickStats.uptimeSeconds",
+                           lambda v: round(v / 86400, 1)),
 }
 
 HOST_FIELDS = {
@@ -245,12 +295,14 @@ OBJECT_TYPES = {
 
 # ── Validation, aggregation, formatting (pure) ───────────────────
 
-def validate_query(object_type, filters, group_by, fields):
+def validate_query(object_type, filters, group_by, fields, sort_by=None):
     """Return an error string naming the valid fields, or None if the query is OK."""
     valid = OBJECT_TYPES[object_type]["fields"]
     unknown = [c.field for c in (filters or []) if c.field not in valid]
     if group_by and group_by not in valid:
         unknown.append(group_by)
+    if sort_by and sort_by not in valid:
+        unknown.append(sort_by)
     unknown.extend(f for f in (fields or []) if f not in valid)
     if unknown:
         return (f"Unknown field(s) {sorted(set(unknown))} for {object_type}. "
@@ -268,13 +320,19 @@ def aggregate(rows, group_by):
     return sorted(counts.items(), key=lambda item: (-item[1], item[0]))
 
 
-def format_distribution(pairs, group_by, type_label):
+def format_distribution(pairs, group_by, type_label, limit=0):
     total = sum(count for _, count in pairs)
     if total == 0:
         return f"No matching {type_label}"
+    shown = pairs if limit == 0 or len(pairs) <= limit else pairs[:limit]
     lines = [f"Distribution of {group_by} across {total} {type_label}:", ""]
-    for value, count in pairs:
+    for value, count in shown:
         lines.append(f"  {value}: {count} ({count / total * 100:.1f}%)")
+    if len(shown) < len(pairs):
+        rest = pairs[len(shown):]
+        lines.append(f"  … and {len(rest)} more values covering "
+                     f"{sum(c for _, c in rest)} {type_label} "
+                     f"(raise limit for the full distribution)")
     return "\n".join(lines)
 
 
@@ -307,17 +365,19 @@ def _collect(client, vim_type, path_specs, container=None):
     view = client.get_container_view(vim_type, container=container)
     try:
         collector = client.content.propertyCollector
+        # pyVmomi's VMODL types take keyword args at runtime, but its type
+        # stubs declare no constructor parameters — hence the pyright ignores.
         traversal_spec = vmodl.query.PropertyCollector.TraversalSpec(
-            name="traverse", type=vim.view.ContainerView, path="view", skip=False)
+            name="traverse", type=vim.view.ContainerView, path="view", skip=False)  # pyright: ignore[reportCallIssue]
         obj_spec = vmodl.query.PropertyCollector.ObjectSpec(
-            obj=view, skip=True, selectSet=[traversal_spec])
+            obj=view, skip=True, selectSet=[traversal_spec])  # pyright: ignore[reportCallIssue]
         prop_specs = [
             vmodl.query.PropertyCollector.PropertySpec(
-                type=spec_type, pathSet=sorted(paths), all=False)
+                type=spec_type, pathSet=sorted(paths), all=False)  # pyright: ignore[reportCallIssue]
             for spec_type, paths in path_specs.items()
         ]
         filter_spec = vmodl.query.PropertyCollector.FilterSpec(
-            objectSet=[obj_spec], propSet=prop_specs)
+            objectSet=[obj_spec], propSet=prop_specs)  # pyright: ignore[reportCallIssue]
         options = vmodl.query.PropertyCollector.RetrieveOptions()
 
         results = []
@@ -381,9 +441,10 @@ def fetch_inventory(client, object_type, field_names, container=None):
 
 
 def run_inventory_query(client, object_type, filters=None, group_by=None,
-                        fields=None, limit=50, container=None):
-    """Validate → bulk-fetch → filter → aggregate or list. Returns display text."""
-    error = validate_query(object_type, filters, group_by, fields)
+                        fields=None, limit=50, container=None,
+                        sort_by=None, descending=True):
+    """Validate → bulk-fetch → filter → sort → aggregate or list. Returns display text."""
+    error = validate_query(object_type, filters, group_by, fields, sort_by)
     if error:
         return error
     cfg = OBJECT_TYPES[object_type]
@@ -395,11 +456,15 @@ def run_inventory_query(client, object_type, filters=None, group_by=None,
         needed = set(display_fields) | filter_fields
         if group_by:
             needed.add(group_by)
+        if sort_by:
+            needed.add(sort_by)
     rows = fetch_inventory(client, object_type, sorted(needed),
                            container=container)
     total = len(rows)
     matched = apply_filters(rows, filters or [])
     if group_by:
         return format_distribution(aggregate(matched, group_by), group_by,
-                                   cfg["label"])
+                                   cfg["label"], limit)
+    if sort_by:
+        matched = sort_rows(matched, sort_by, descending)
     return format_rows(matched, display_fields, total, cfg["label"], limit)
