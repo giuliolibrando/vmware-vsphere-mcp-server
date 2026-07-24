@@ -195,3 +195,38 @@ class TestRunInventoryQuery:
         out = inventory.run_inventory_query(
             None, "vm", filters=[fc("bogus", "eq", 1)])
         assert "Unknown field" in out and "bogus" in out
+
+
+class TestPrefixNumberComparisons:
+    ROWS = [
+        {"name": "old", "hardware_version": "vmx-08"},
+        {"name": "mid", "hardware_version": "vmx-13"},
+        {"name": "new", "hardware_version": "vmx-19"},
+        {"name": "unset", "hardware_version": None},
+    ]
+
+    def test_lte_on_prefix_number_strings(self):
+        out = apply_filters(self.ROWS, [fc("hardware_version", "lte", "vmx-13")])
+        assert names(out) == ["old", "mid"]
+
+    def test_gt_on_prefix_number_strings(self):
+        out = apply_filters(self.ROWS, [fc("hardware_version", "gt", "vmx-13")])
+        assert names(out) == ["new"]
+
+    def test_plain_number_against_prefix_number_field(self):
+        out = apply_filters(self.ROWS, [fc("hardware_version", "lt", 13)])
+        assert names(out) == ["old"]
+
+    def test_eq_stays_string_based(self):
+        out = apply_filters(self.ROWS, [fc("hardware_version", "eq", "vmx-13")])
+        assert names(out) == ["mid"]
+        assert apply_filters(self.ROWS, [fc("hardware_version", "eq", "13")]) == []
+
+    def test_plain_words_still_fail_numeric_ops(self):
+        rows = [{"guest_os": "Ubuntu Linux (64-bit)"}]
+        assert apply_filters(rows, [fc("guest_os", "gt", 5)]) == []
+
+    def test_dotted_versions_do_not_parse_as_suffix_numbers(self):
+        rows = [{"esxi_version": "7.0.3"}, {"esxi_version": "8.0.1"}]
+        out = apply_filters(rows, [fc("esxi_version", "gte", "esx-8")])
+        assert out == []

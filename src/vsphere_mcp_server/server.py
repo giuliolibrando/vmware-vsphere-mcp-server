@@ -58,6 +58,8 @@ def list_vms(
         filters=[{"field": "hardware_version", "op": "eq", "value": "vmx-13"}]
       Show the OS distribution:
         group_by="guest_os"
+      VMs with hardware version vmx-13 or older:
+        filters=[{"field": "hardware_version", "op": "lte", "value": "vmx-13"}]
       Powered-on VMs that have snapshots:
         filters=[{"field": "power_state", "op": "eq", "value": "poweredOn"},
                  {"field": "snapshot_count", "op": "gt", "value": 0}]

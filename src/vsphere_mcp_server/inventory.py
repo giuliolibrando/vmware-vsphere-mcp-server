@@ -7,6 +7,7 @@ filters and aggregates in process, and returns only the result — so the
 calling LLM never has to ingest the full inventory.
 """
 
+import re
 from typing import List, Literal, Union
 
 from pydantic import BaseModel
@@ -31,6 +32,22 @@ def _loose_eq(a, b) -> bool:
     return a == b
 
 
+_PREFIX_NUMBER = re.compile(r"[A-Za-z_-]+(\d+)")
+
+
+def _numeric(value):
+    """float(value), falling back to the trailing number of prefix-number
+    strings like 'vmx-13' → 13.0. Returns None when not comparable."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        if isinstance(value, str):
+            match = _PREFIX_NUMBER.fullmatch(value.strip())
+            if match:
+                return float(match.group(1))
+        return None
+
+
 def _matches(value, cond: FilterCondition) -> bool:
     op, expected = cond.op, cond.value
     if value is None:
@@ -44,9 +61,8 @@ def _matches(value, cond: FilterCondition) -> bool:
     if op == "in":
         options = expected if isinstance(expected, list) else [expected]
         return any(_loose_eq(value, option) for option in options)
-    try:
-        left, right = float(value), float(expected)
-    except (TypeError, ValueError):
+    left, right = _numeric(value), _numeric(expected)
+    if left is None or right is None:
         return False
     return {"gt": left > right, "gte": left >= right,
             "lt": left < right, "lte": left <= right}[op]
