@@ -8,6 +8,7 @@ calling LLM never has to ingest the full inventory.
 """
 
 import re
+from datetime import datetime, timezone
 from typing import List, Literal, Union
 
 from pydantic import BaseModel
@@ -322,6 +323,53 @@ CLUSTER_FIELDS = {
     "overall_status": _direct("overallStatus", str),
 }
 
+
+def _row_field(key):
+    # Snapshot rows are built wholesale by fetch_snapshot_rows, not via
+    # PropertyCollector extracts; these entries exist so validate_query
+    # and the fields param work uniformly.
+    def extract(props, ctx):
+        return props.get(key)
+    return {"paths": [], "extract": extract}
+
+
+SNAPSHOT_FIELDS = {key: _row_field(key) for key in (
+    "name", "snapshot_id", "vm_name", "vm_id", "created", "age_days",
+    "state", "description", "quiesced", "depth", "is_current")}
+
+
+def fetch_snapshot_rows(client, field_names, container=None):
+    """One PropertyCollector round-trip over ALL VMs → one row per snapshot.
+
+    field_names is accepted for signature parity with fetch_inventory
+    but ignored: rows always carry the full snapshot field set.
+    """
+    pairs = _collect(client, vim.VirtualMachine, {
+        vim.VirtualMachine: {"name", "snapshot.rootSnapshotList",
+                             "snapshot.currentSnapshot"}},
+        container=container)
+    now = datetime.now(timezone.utc)
+    rows = []
+    for obj, props in pairs:
+        tree = props.get("snapshot.rootSnapshotList")
+        if not tree:
+            continue
+        current_id = _ref_id(props.get("snapshot.currentSnapshot"))
+        for row in flatten_snapshot_tree(tree):
+            del row["snapshot_obj"]
+            created_dt = row.pop("created_dt")
+            if created_dt is not None and created_dt.tzinfo is None:
+                created_dt = created_dt.replace(tzinfo=timezone.utc)
+            row["vm_name"] = props.get("name")
+            row["vm_id"] = obj._moId
+            row["age_days"] = (
+                round((now - created_dt).total_seconds() / 86400, 1)
+                if created_dt is not None else None)
+            row["is_current"] = row["snapshot_id"] == current_id
+            rows.append(row)
+    return rows
+
+
 OBJECT_TYPES = {
     "vm": {"vim_type": vim.VirtualMachine, "fields": VM_FIELDS, "label": "VMs",
            "default_fields": ["name", "power_state", "guest_os"]},
@@ -338,6 +386,9 @@ OBJECT_TYPES = {
                 "label": "clusters",
                 "default_fields": ["name", "host_count", "drs_enabled",
                                    "ha_enabled"]},
+    "snapshot": {"fields": SNAPSHOT_FIELDS, "label": "snapshots",
+                 "default_fields": ["name", "vm_name", "age_days", "created"],
+                 "fetch": fetch_snapshot_rows},
 }
 
 
@@ -445,6 +496,9 @@ def _collect(client, vim_type, path_specs, container=None):
 def fetch_inventory(client, object_type, field_names, container=None):
     """Fetch field_names for all objects of object_type; returns list of dicts."""
     cfg = OBJECT_TYPES[object_type]
+    fetch = cfg.get("fetch")
+    if fetch is not None:
+        return fetch(client, field_names, container=container)
     base_type = cfg["vim_type"]
     field_map = cfg["fields"]
 

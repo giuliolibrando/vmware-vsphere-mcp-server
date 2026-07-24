@@ -469,3 +469,89 @@ class TestFindObject:
         obj, err = inventory.find_object(None, "vm", "vm-99", "vm-")
         assert obj is None and err is not None
         assert "not found" in err.lower()
+
+
+from datetime import timedelta, timezone
+
+
+def _snap_node(name, moid, created, children=(), quiesced=False):
+    return SimpleNamespace(
+        name=name,
+        snapshot=SimpleNamespace(_moId=moid),
+        createTime=created,
+        state="poweredOff",
+        description="",
+        quiesced=quiesced,
+        childSnapshotList=list(children),
+    )
+
+
+class TestFetchSnapshotRows:
+    @staticmethod
+    def _pairs(created):
+        return [
+            (SimpleNamespace(_moId="vm-1"), {
+                "name": "web01",
+                "snapshot.rootSnapshotList": [
+                    _snap_node("base", "snapshot-1", created, children=[
+                        _snap_node("child", "snapshot-2", created)])],
+                "snapshot.currentSnapshot": SimpleNamespace(_moId="snapshot-2"),
+            }),
+            (SimpleNamespace(_moId="vm-2"), {"name": "db01"}),  # no snapshots
+            (SimpleNamespace(_moId="vm-3"), {
+                "name": "app01",
+                "snapshot.rootSnapshotList": [
+                    _snap_node("solo", "snapshot-9", created)],
+                "snapshot.currentSnapshot": SimpleNamespace(_moId="snapshot-9"),
+            }),
+        ]
+
+    def _patch(self, monkeypatch, pairs):
+        monkeypatch.setattr(
+            inventory, "_collect",
+            lambda client, vim_type, path_specs, container=None: pairs)
+
+    def test_fans_out_one_row_per_snapshot_tagged_with_vm(self, monkeypatch):
+        created = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        self._patch(monkeypatch, self._pairs(created))
+        rows = inventory.fetch_snapshot_rows(None, ["name"])
+        assert [(r["vm_name"], r["name"], r["depth"]) for r in rows] == [
+            ("web01", "base", 0), ("web01", "child", 1), ("app01", "solo", 0)]
+        assert rows[0]["vm_id"] == "vm-1"
+        assert "snapshot_obj" not in rows[0]
+        assert "created_dt" not in rows[0]
+
+    def test_is_current_marks_only_the_current_snapshot(self, monkeypatch):
+        created = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        self._patch(monkeypatch, self._pairs(created))
+        rows = inventory.fetch_snapshot_rows(None, ["name"])
+        assert [(r["snapshot_id"], r["is_current"]) for r in rows] == [
+            ("snapshot-1", False), ("snapshot-2", True), ("snapshot-9", True)]
+
+    def test_age_days_computed_from_created(self, monkeypatch):
+        created = datetime.now(timezone.utc) - timedelta(days=10)
+        self._patch(monkeypatch, self._pairs(created))
+        rows = inventory.fetch_snapshot_rows(None, ["name"])
+        assert 9.9 <= rows[0]["age_days"] <= 10.1
+
+    def test_naive_created_is_treated_as_utc(self, monkeypatch):
+        # naive UTC (datetime.utcnow() is deprecated in 3.12+)
+        naive = (datetime.now(timezone.utc) - timedelta(days=10)).replace(
+            tzinfo=None)
+        assert naive.tzinfo is None
+        self._patch(monkeypatch, self._pairs(naive))
+        rows = inventory.fetch_snapshot_rows(None, ["name"])
+        assert 9.9 <= rows[0]["age_days"] <= 10.1
+
+    def test_missing_created_yields_none_age(self, monkeypatch):
+        self._patch(monkeypatch, self._pairs(None))
+        rows = inventory.fetch_snapshot_rows(None, ["name"])
+        assert rows[0]["age_days"] is None
+        assert rows[0]["created"] is None
+
+    def test_fetch_inventory_routes_snapshot_type_to_override(self, monkeypatch):
+        created = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        self._patch(monkeypatch, self._pairs(created))
+        rows = inventory.fetch_inventory(None, "snapshot", ["name", "age_days"])
+        assert len(rows) == 3
+        assert rows[0]["vm_name"] == "web01"
