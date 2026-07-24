@@ -1235,7 +1235,8 @@ def list_vm_snapshots(
     calling this tool once per VM.
 
     Queryable fields (fleet mode): name, snapshot_id, vm_name, vm_id,
-    created, age_days, state, description, quiesced, depth, is_current.
+    created (UTC, YYYY-MM-DD HH:MM:SS), age_days, state, description,
+    quiesced, depth, is_current.
     Filter ops: eq, ne, contains, not_contains, gt, gte, lt, lte, in
     (conditions are ANDed; string matching is case-insensitive).
 

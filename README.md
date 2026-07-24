@@ -120,7 +120,7 @@ Add the following configuration to your `anythingllm_mcp_servers.json`:
 ### Snapshot Management
 | Tool | Description | Parameters |
 |------|-------------|------------|
-| `list_vm_snapshots` | List VM snapshots | `vm_id`, `hostname` (optional) |
+| `list_vm_snapshots` | List one VM's snapshots, or query all VMs' snapshots | `vm_id` (optional; omit for fleet-wide query), `hostname` (optional) |
 | `create_vm_snapshot` | Create VM snapshot | `vm_id`, `snapshot_name`, `description`, `hostname` (optional) |
 | `delete_vm_snapshot` | Delete VM snapshot  | `vm_id`, `snapshot_id`, `confirm`, `hostname` (optional) |
 
@@ -164,6 +164,8 @@ The list tools (`list_vms`, `list_hosts`, `list_datastores`, `list_networks`,
 `sort_by`/`descending`, and `limit` parameters. Filtering, counting, and
 sorting run inside the server (one PropertyCollector round-trip for the whole
 inventory), so only the result — never the full inventory — reaches the LLM.
+`list_vm_snapshots` supports the same parameters in fleet mode: called
+without `vm_id`, it queries the snapshots of every VM in one round-trip.
 
 Examples:
 
@@ -177,6 +179,10 @@ Examples:
   `list_vms(filters=[{"field": "hardware_version", "op": "lte", "value": "vmx-13"}])`
 - The 10 largest VMs by provisioned storage:
   `list_vms(sort_by="storage_provisioned_gb", fields=["name", "storage_provisioned_gb"], limit=10)`
+- The 10 oldest snapshots anywhere in the fleet:
+  `list_vm_snapshots(sort_by="age_days", limit=10)`
+- Snapshots older than 30 days, per VM:
+  `list_vm_snapshots(filters=[{"field": "age_days", "op": "gt", "value": 30}], group_by="vm_name")`
 
 Operators: `eq, ne, contains, not_contains, gt, gte, lt, lte, in` (conditions
 are ANDed, string matching is case-insensitive). Range operators compare
