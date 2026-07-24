@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 from .vsphere_client import VSphereClient
 from .pyvmomi_client import PyVmomiClient
@@ -17,6 +18,17 @@ from pyVmomi import vim, vmodl
 
 # Initialize MCP server
 mcp = FastMCP("vSphere MCP Server")
+
+# Tool annotations advertised to MCP clients. openWorldHint is False
+# everywhere: every tool talks to one configured vCenter, not the open
+# internet. Destructive/idempotent hints follow the confirm-gated
+# destructive-operation pattern in this file.
+_READ_ONLY = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
+
+
+def _mutating(destructive: bool, idempotent: bool) -> ToolAnnotations:
+    return ToolAnnotations(readOnlyHint=False, destructiveHint=destructive,
+                           idempotentHint=idempotent, openWorldHint=False)
 
 
 def _handle_error(e: Exception, operation: str) -> str:
@@ -50,7 +62,7 @@ def _wait_for_pyvmomi_task(task, timeout=300, interval=2):
 
 
 # VM Management Tools
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def list_vms(
     hostname: Optional[str] = None,
     filters: Optional[List[FilterCondition]] = None,
@@ -154,7 +166,7 @@ def list_vms(
         client.close()
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def get_vm_details(vm_id: str, hostname: Optional[str] = None) -> str:
     """Get detailed information about a specific virtual machine.
 
@@ -221,7 +233,7 @@ def get_vm_details(vm_id: str, hostname: Optional[str] = None) -> str:
         client.close()
 
 
-@mcp.tool()
+@mcp.tool(annotations=_mutating(destructive=False, idempotent=True))
 def power_on_vm(vm_id: str, hostname: Optional[str] = None) -> str:
     """Power on a virtual machine.
 
@@ -244,7 +256,7 @@ def power_on_vm(vm_id: str, hostname: Optional[str] = None) -> str:
         client.close()
 
 
-@mcp.tool()
+@mcp.tool(annotations=_mutating(destructive=False, idempotent=True))
 def power_off_vm(vm_id: str, hostname: Optional[str] = None) -> str:
     """Power off a virtual machine.
 
@@ -268,7 +280,7 @@ def power_off_vm(vm_id: str, hostname: Optional[str] = None) -> str:
 
 
 # Infrastructure Tools
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def list_hosts(
     hostname: Optional[str] = None,
     filters: Optional[List[FilterCondition]] = None,
@@ -356,7 +368,7 @@ def list_hosts(
         client.close()
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def get_host_details(hostname: Optional[str] = None, host_id: Optional[str] = None) -> str:
     """Get detailed information about an ESXi host.
 
@@ -408,7 +420,7 @@ def get_host_details(hostname: Optional[str] = None, host_id: Optional[str] = No
     return "\n".join(lines)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def list_datacenters(hostname: Optional[str] = None) -> str:
     """List all datacenters.
 
@@ -439,7 +451,7 @@ def list_datacenters(hostname: Optional[str] = None) -> str:
         client.close()
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def get_datacenter_details(hostname: Optional[str] = None, datacenter_id: Optional[str] = None) -> str:
     """Get detailed information about a datacenter.
 
@@ -470,7 +482,7 @@ def get_datacenter_details(hostname: Optional[str] = None, datacenter_id: Option
         client.close()
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def list_datastores(
     hostname: Optional[str] = None,
     filters: Optional[List[FilterCondition]] = None,
@@ -556,7 +568,7 @@ def list_datastores(
         client.close()
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def get_datastore_details(hostname: Optional[str] = None, datastore_id: Optional[str] = None) -> str:
     """Get detailed information about a datastore.
 
@@ -606,7 +618,7 @@ def get_datastore_details(hostname: Optional[str] = None, datastore_id: Optional
 
 
 # Organization Tools
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def list_folders(hostname: Optional[str] = None, folder_type: str = "VIRTUAL_MACHINE",
                  name_contains: Optional[str] = None, limit: int = 50) -> str:
     """List folders by type.
@@ -651,7 +663,7 @@ def list_folders(hostname: Optional[str] = None, folder_type: str = "VIRTUAL_MAC
         client.close()
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def get_folder_details(hostname: Optional[str] = None, folder_id: Optional[str] = None) -> str:
     """Get detailed information about a folder.
 
@@ -687,7 +699,7 @@ def get_folder_details(hostname: Optional[str] = None, folder_id: Optional[str] 
 
 
 # Network Tools
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def list_networks(
     hostname: Optional[str] = None,
     filters: Optional[List[FilterCondition]] = None,
@@ -775,7 +787,7 @@ def list_networks(
         client.close()
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def get_network_details(hostname: Optional[str] = None, network_id: Optional[str] = None) -> str:
     """Get detailed information about a network.
 
@@ -820,7 +832,7 @@ def get_network_details(hostname: Optional[str] = None, network_id: Optional[str
         client.close()
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def get_vlan_info(hostname: Optional[str] = None, vlan_query: str = "") -> str:
     """Get information about a VLAN by name or VLAN ID.
 
@@ -887,7 +899,7 @@ def get_vlan_info(hostname: Optional[str] = None, vlan_query: str = "") -> str:
         client.close()
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def list_vlans(hostname: Optional[str] = None) -> str:
     """Extract and list VLAN information from network names.
 
@@ -934,7 +946,7 @@ def list_vlans(hostname: Optional[str] = None) -> str:
         client.close()
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def get_vm_disk_usage(hostname: Optional[str] = None, limit: int = 15) -> str:
     """Top VMs by space actually used on datastores (one bulk query).
 
@@ -968,7 +980,7 @@ def get_vm_disk_usage(hostname: Optional[str] = None, limit: int = 15) -> str:
         pv_client.close()
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def get_vm_storage_info(hostname: Optional[str] = None, vm_id: Optional[str] = None,
                         limit: int = 15) -> str:
     """Storage info: per-VM disk detail, or top storage consumers overall.
@@ -1051,7 +1063,7 @@ def get_vm_storage_info(hostname: Optional[str] = None, vm_id: Optional[str] = N
         client.close()
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def get_datastore_usage(hostname: Optional[str] = None) -> str:
     """Get datastore usage information to identify potential storage issues.
 
@@ -1111,7 +1123,7 @@ def get_datastore_usage(hostname: Optional[str] = None) -> str:
         client.close()
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def get_vm_performance_info(hostname: Optional[str] = None, limit: int = 15) -> str:
     """Top powered-on VMs by live CPU usage, with memory usage (bulk queries, never per-VM).
 
@@ -1145,7 +1157,7 @@ def get_vm_performance_info(hostname: Optional[str] = None, limit: int = 15) -> 
         pv_client.close()
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def get_host_performance_info(hostname: Optional[str] = None, limit: int = 25) -> str:
     """ESXi hosts ranked by live CPU usage, with capacity and load (one bulk query).
 
@@ -1176,7 +1188,7 @@ def get_host_performance_info(hostname: Optional[str] = None, limit: int = 25) -
         pv_client.close()
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def get_vms_with_high_resource_usage(hostname: Optional[str] = None,
                                      cpu_threshold: int = 8,
                                      memory_gb_threshold: int = 16,
@@ -1228,7 +1240,7 @@ def get_vms_with_high_resource_usage(hostname: Optional[str] = None,
 
 
 # Snapshot Management Tools
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def list_vm_snapshots(
     vm_id: Optional[str] = None,
     hostname: Optional[str] = None,
@@ -1317,7 +1329,7 @@ def list_vm_snapshots(
         pv_client.close()
 
 
-@mcp.tool()
+@mcp.tool(annotations=_mutating(destructive=False, idempotent=False))
 def create_vm_snapshot(vm_id: str, snapshot_name: str, description: str = "",
                        memory: bool = False, quiesce: bool = False,
                        hostname: Optional[str] = None) -> str:
@@ -1366,7 +1378,7 @@ def create_vm_snapshot(vm_id: str, snapshot_name: str, description: str = "",
 
 
 # Template Management Tools
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def list_templates(hostname: Optional[str] = None) -> str:
     """List all VM templates.
 
@@ -1409,7 +1421,7 @@ def list_templates(hostname: Optional[str] = None) -> str:
 
 
 # Advanced Monitoring Tools
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def get_vm_events(vm_id: str, hostname: Optional[str] = None) -> str:
     """Get recent events for a specific VM.
 
@@ -1464,7 +1476,7 @@ def get_vm_events(vm_id: str, hostname: Optional[str] = None) -> str:
         client.close()
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def get_alarms(hostname: Optional[str] = None) -> str:
     """Get active alarms in the vSphere environment.
 
@@ -1505,7 +1517,7 @@ def get_alarms(hostname: Optional[str] = None) -> str:
 
 
 # Network Management Tools
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def get_port_groups(hostname: Optional[str] = None, limit: int = 50) -> str:
     """Get port groups in the vSphere environment.
 
@@ -1549,7 +1561,7 @@ def get_port_groups(hostname: Optional[str] = None, limit: int = 50) -> str:
 
 
 # Reporting and Analytics Tools
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def generate_vm_report(hostname: Optional[str] = None) -> str:
     """Compact environment report: totals, distributions, top consumers.
 
@@ -1622,7 +1634,7 @@ def generate_vm_report(hostname: Optional[str] = None) -> str:
     return result.strip()
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def get_resource_utilization_summary(hostname: Optional[str] = None) -> str:
     """Get a summary of resource utilization across the vSphere environment.
 
@@ -1694,7 +1706,7 @@ def get_resource_utilization_summary(hostname: Optional[str] = None) -> str:
 
 
 # Automation Tools
-@mcp.tool()
+@mcp.tool(annotations=_mutating(destructive=True, idempotent=False))
 def bulk_power_operations(operation: str, vm_list: str, hostname: Optional[str] = None) -> str:
     """Perform bulk power operations on multiple VMs.
 
@@ -1757,7 +1769,7 @@ def bulk_power_operations(operation: str, vm_list: str, hostname: Optional[str] 
 
 
 # Destructive Operations with Confirmation
-@mcp.tool()
+@mcp.tool(annotations=_mutating(destructive=True, idempotent=True))
 def delete_vm_snapshot(vm_id: str, snapshot_id: str, confirm: bool = False, hostname: Optional[str] = None) -> str:
     """Delete a snapshot for a specific VM. REQUIRES CONFIRMATION.
 
@@ -1808,7 +1820,7 @@ def delete_vm_snapshot(vm_id: str, snapshot_id: str, confirm: bool = False, host
         pv_client.close()
 
 
-@mcp.tool()
+@mcp.tool(annotations=_mutating(destructive=True, idempotent=True))
 def delete_vm(vm_id: str, confirm: bool = False, hostname: Optional[str] = None) -> str:
     """Delete a virtual machine. REQUIRES CONFIRMATION.
 
@@ -1852,7 +1864,7 @@ def delete_vm(vm_id: str, confirm: bool = False, hostname: Optional[str] = None)
         client.close()
 
 
-@mcp.tool()
+@mcp.tool(annotations=_mutating(destructive=True, idempotent=True))
 def modify_vm_resources(vm_id: str, cpu_count: Optional[int] = None, memory_gb: Optional[int] = None, confirm: bool = False, hostname: Optional[str] = None) -> str:
     """Modify VM resources (CPU and/or Memory). REQUIRES CONFIRMATION.
 
@@ -1923,7 +1935,7 @@ def modify_vm_resources(vm_id: str, cpu_count: Optional[int] = None, memory_gb: 
         client.close()
 
 
-@mcp.tool()
+@mcp.tool(annotations=_mutating(destructive=True, idempotent=True))
 def bulk_delete_vms(vm_list: str, confirm: bool = False, hostname: Optional[str] = None) -> str:
     """Delete multiple VMs. REQUIRES CONFIRMATION.
 
@@ -1979,7 +1991,7 @@ def bulk_delete_vms(vm_list: str, confirm: bool = False, hostname: Optional[str]
         client.close()
 
 
-@mcp.tool()
+@mcp.tool(annotations=_mutating(destructive=True, idempotent=True))
 def force_power_off_vm(vm_id: str, confirm: bool = False, hostname: Optional[str] = None) -> str:
     """Force power off a virtual machine (equivalent to pulling the power cord). REQUIRES CONFIRMATION.
 
@@ -2026,7 +2038,7 @@ def force_power_off_vm(vm_id: str, confirm: bool = False, hostname: Optional[str
 # ── pyVmomi-based Advanced Tools ──────────────────────────────────
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def list_datacenters_pyvmomi(hostname: Optional[str] = None) -> str:
     """List all datacenters using pyVmomi (direct SOAP connection).
 
@@ -2049,7 +2061,7 @@ def list_datacenters_pyvmomi(hostname: Optional[str] = None) -> str:
         client.close()
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def list_clusters_pyvmomi(
     datacenter: Optional[str] = None,
     hostname: Optional[str] = None,
@@ -2134,7 +2146,7 @@ def list_clusters_pyvmomi(
         client.close()
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def find_template_pyvmomi(name: str, datacenter: Optional[str] = None, hostname: Optional[str] = None) -> str:
     """Find a VM template by name using pyVmomi PropertyCollector.
 
@@ -2193,7 +2205,7 @@ def find_template_pyvmomi(name: str, datacenter: Optional[str] = None, hostname:
         client.close()
 
 
-@mcp.tool()
+@mcp.tool(annotations=_mutating(destructive=False, idempotent=False))
 def clone_vm(
     template_name: str,
     vm_name: str,
@@ -2379,7 +2391,7 @@ def clone_vm(
         client.close()
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def get_vm_networks_pyvmomi(vm_name: str, hostname: Optional[str] = None) -> str:
     """Get network adapter details of a VM using pyVmomi.
 
