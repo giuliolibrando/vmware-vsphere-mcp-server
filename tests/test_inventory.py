@@ -82,6 +82,11 @@ class TestApplyFilters:
         assert names(apply_filters(ROWS, [fc("template", "eq", "false")])) == [
             "prod-web-01", "prod-db-01"]
 
+    def test_range_ops_never_match_booleans(self):
+        assert apply_filters(ROWS, [fc("template", "gt", False)]) == []
+        assert apply_filters(ROWS, [fc("template", "lte", 1)]) == []
+        assert apply_filters(ROWS, [fc("memory_mb", "gt", True)]) == []
+
     def test_missing_key_is_treated_as_none(self):
         out = apply_filters([{"name": "x"}], [fc("guest_os", "ne", "anything")])
         assert names(out) == ["x"]
@@ -357,7 +362,7 @@ class TestFieldPropagationToFetch:
         assert {"guest_os", "cpu_count"} <= set(captured["field_names"])
 
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 
@@ -392,11 +397,22 @@ class TestFlattenSnapshotTree:
         assert inventory.flatten_snapshot_tree(None) == []
         assert inventory.flatten_snapshot_tree([]) == []
 
-    def test_rows_carry_raw_created_datetime(self):
+    def test_rows_carry_utc_created_datetime(self):
         tree = [self._node("base", "snapshot-1")]
         rows = inventory.flatten_snapshot_tree(tree)
-        assert rows[0]["created_dt"] == datetime(2026, 1, 2, 3, 4, 5)
+        assert rows[0]["created_dt"] == datetime(2026, 1, 2, 3, 4, 5,
+                                                 tzinfo=timezone.utc)
         assert rows[0]["created"] == "2026-01-02 03:04:05"
+
+    def test_created_is_utc_normalized_with_stable_format(self):
+        node = self._node("tz", "snapshot-5")
+        node.createTime = datetime(
+            2026, 1, 2, 4, 34, 5, 123456,
+            tzinfo=timezone(timedelta(hours=1, minutes=30)))
+        rows = inventory.flatten_snapshot_tree([node])
+        assert rows[0]["created"] == "2026-01-02 03:04:05"
+        assert rows[0]["created_dt"] == datetime(2026, 1, 2, 3, 4, 5, 123456,
+                                                 tzinfo=timezone.utc)
 
     def test_created_none_yields_none_created_and_created_dt(self):
         node = self._node("base", "snapshot-1")

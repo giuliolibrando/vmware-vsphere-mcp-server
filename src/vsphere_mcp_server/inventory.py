@@ -38,7 +38,11 @@ _PREFIX_NUMBER = re.compile(r"[A-Za-z_-]+(\d+)")
 
 def _numeric(value):
     """float(value), falling back to the trailing number of prefix-number
-    strings like 'vmx-13' → 13.0. Returns None when not comparable."""
+    strings like 'vmx-13' → 13.0. Returns None when not comparable.
+    Bools are excluded (float(True) == 1.0): a range comparison against a
+    boolean field is a nonsense query and must not silently match."""
+    if isinstance(value, bool):
+        return None
     try:
         return float(value)
     except (TypeError, ValueError):
@@ -136,16 +140,26 @@ def flatten_snapshot_tree(node_list):
 
     Each row carries display values plus the live vim.vm.Snapshot managed
     object (snapshot_obj) so callers can act on it (e.g. RemoveSnapshot_Task).
+    "created" is always UTC formatted as YYYY-MM-DD HH:MM:SS — vCenter
+    returns tz-aware times with sub-second precision, and str() of those
+    varies by environment; naive times are assumed to already be UTC.
+    "created_dt" is the same instant as a tz-aware UTC datetime.
     """
     rows = []
 
     def walk(nodes, depth):
         for node in nodes or []:
+            created = node.createTime
+            if created is not None:
+                created = (created.replace(tzinfo=timezone.utc)
+                           if created.tzinfo is None
+                           else created.astimezone(timezone.utc))
             rows.append({
                 "name": node.name,
                 "snapshot_id": getattr(node.snapshot, "_moId", None),
-                "created": str(node.createTime) if node.createTime else None,
-                "created_dt": node.createTime,
+                "created": (created.strftime("%Y-%m-%d %H:%M:%S")
+                            if created else None),
+                "created_dt": created,
                 "state": str(node.state) if node.state else None,
                 "description": node.description or "",
                 "quiesced": bool(node.quiesced),
@@ -357,9 +371,8 @@ def fetch_snapshot_rows(client, field_names, container=None):
         current_id = _ref_id(props.get("snapshot.currentSnapshot"))
         for row in flatten_snapshot_tree(tree):
             del row["snapshot_obj"]
+            # created_dt is already tz-aware UTC (see flatten_snapshot_tree)
             created_dt = row.pop("created_dt")
-            if created_dt is not None and created_dt.tzinfo is None:
-                created_dt = created_dt.replace(tzinfo=timezone.utc)
             row["vm_name"] = props.get("name")
             row["vm_id"] = obj._moId
             row["age_days"] = (

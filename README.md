@@ -157,13 +157,13 @@ Add the following configuration to your `anythingllm_mcp_servers.json`:
 
 **Destructive operations require explicit confirmation by setting `confirm=True`**
 
-## Filtering and counting
+## Filtering, counting, and ranking
 
 The list tools (`list_vms`, `list_hosts`, `list_datastores`, `list_networks`,
-`list_clusters_pyvmomi`) accept optional `filters`, `group_by`, `fields`, and
-`limit` parameters. Filtering and counting run inside the server (one
-PropertyCollector round-trip for the whole inventory), so only the result —
-never the full inventory — reaches the LLM.
+`list_clusters_pyvmomi`) accept optional `filters`, `group_by`, `fields`,
+`sort_by`/`descending`, and `limit` parameters. Filtering, counting, and
+sorting run inside the server (one PropertyCollector round-trip for the whole
+inventory), so only the result — never the full inventory — reaches the LLM.
 
 Examples:
 
@@ -175,12 +175,15 @@ Examples:
   `list_datastores(filters=[{"field": "free_pct", "op": "lt", "value": 10}])`
 - VMs with hardware version vmx-13 or older:
   `list_vms(filters=[{"field": "hardware_version", "op": "lte", "value": "vmx-13"}])`
+- The 10 largest VMs by provisioned storage:
+  `list_vms(sort_by="storage_provisioned_gb", fields=["name", "storage_provisioned_gb"], limit=10)`
 
 Operators: `eq, ne, contains, not_contains, gt, gte, lt, lte, in` (conditions
 are ANDed, string matching is case-insensitive). Range operators compare
 numbers, and also prefix-number strings like `vmx-13` by their trailing
-number. Each tool's description lists its queryable fields. `limit` defaults
-to 50 rows (`0` = unlimited).
+number. `sort_by` orders by any queryable field (`descending` defaults to
+true — biggest/latest first). Each tool's description lists its queryable
+fields. `limit` defaults to 50 rows (`0` = unlimited).
 
 ## Security Features
 
