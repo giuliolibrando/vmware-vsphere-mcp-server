@@ -2246,7 +2246,18 @@ def main() -> None:
     # Load environment variables
     load_dotenv()
 
-    transport = os.environ.get("MCP_TRANSPORT", "streamable-http")
+    raw_transport = os.environ.get("MCP_TRANSPORT", "streamable-http")
+    transport = raw_transport.strip().lower()
+    if transport not in ("stdio", "streamable-http"):
+        # Fail loudly rather than silently starting the HTTP server: a
+        # typo like "STDIO " or "streamable_http" would otherwise leave a
+        # stdio client hanging against an HTTP listener.
+        print(
+            f"Error: unsupported MCP_TRANSPORT value {raw_transport!r}. "
+            "Valid values: 'stdio', 'streamable-http' (default).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     if transport == "stdio":
         # stdio has no safe interactive fallback: credentials.py's
