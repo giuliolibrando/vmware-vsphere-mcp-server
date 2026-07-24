@@ -55,6 +55,15 @@ def _numeric(value):
 
 def _matches(value, cond: FilterCondition) -> bool:
     op, expected = cond.op, cond.value
+    if isinstance(value, list):
+        # Multi-value fields (e.g. a VM's networks): positive ops match if
+        # ANY element matches, negative ops only if NO element matches.
+        # Range ops are meaningless on a membership list.
+        if op in ("ne", "not_contains"):
+            return all(_matches(element, cond) for element in value)
+        if op in ("eq", "contains", "in"):
+            return any(_matches(element, cond) for element in value)
+        return False
     if value is None:
         return op in ("ne", "not_contains")
     if op in ("eq", "ne"):
@@ -79,24 +88,33 @@ def apply_filters(rows: list, filters: list) -> list:
             if all(_matches(row.get(c.field), c) for c in filters)]
 
 
+def _scalar(value):
+    """Collapse a multi-value field to one comparable value: the elements
+    joined with ', ' (order preserved). Scalars pass through unchanged."""
+    if isinstance(value, list):
+        return ", ".join(str(element) for element in value)
+    return value
+
+
 def sort_rows(rows: list, sort_by: str, descending: bool = True) -> list:
     """Order rows by sort_by; rows with a missing value go last either way.
 
     Sorts numerically when every present value is numeric (including
     prefix-number strings like 'vmx-13'), otherwise case-insensitively
-    as strings.
+    as strings. Multi-value fields compare as their joined elements.
     """
     present = [row for row in rows if row.get(sort_by) is not None]
     absent = [row for row in rows if row.get(sort_by) is None]
 
     def numeric_key(row) -> float:
-        value = _numeric(row[sort_by])
+        value = _numeric(_scalar(row[sort_by]))
         return value if value is not None else 0.0
 
     def string_key(row) -> str:
-        return str(row[sort_by]).lower()
+        return str(_scalar(row[sort_by])).lower()
 
-    if present and all(_numeric(row[sort_by]) is not None for row in present):
+    if present and all(_numeric(_scalar(row[sort_by])) is not None
+                       for row in present):
         ordered = sorted(present, key=numeric_key, reverse=descending)
     else:
         ordered = sorted(present, key=string_key, reverse=descending)
@@ -124,6 +142,24 @@ def _gb(value):
 
 def _ref_id(ref):
     return getattr(ref, "_moId", None)
+
+
+def _ref_list(path, resolve_type):
+    """A membership field backed by a list of managed-object references
+    (e.g. vm.network, host.datastore). Resolves each reference to its
+    display name via the bulk ctx["ref_names"] lookup that fetch_inventory
+    builds for resolve_type; unresolvable refs fall back to the moId.
+    Always yields a list (empty when the object has no members)."""
+    def extract(props, ctx):
+        names = ctx.get("ref_names", {})
+        return [names.get(_ref_id(ref)) or _ref_id(ref)
+                for ref in (props.get(path) or [])]
+    return {"paths": [path], "extract": extract, "resolve": resolve_type}
+
+
+def _ref_count(path):
+    return {"paths": [path],
+            "extract": lambda props, ctx: len(props.get(path) or [])}
 
 
 def _snapshot_count(node_list):
@@ -276,6 +312,10 @@ VM_FIELDS = {
                                lambda v: round(v / 1024, 1)),
     "uptime_days": _direct("summary.quickStats.uptimeSeconds",
                            lambda v: round(v / 86400, 1)),
+    "networks": _ref_list("network", vim.Network),
+    "network_count": _ref_count("network"),
+    "datastores": _ref_list("datastore", vim.Datastore),
+    "datastore_count": _ref_count("datastore"),
 }
 
 HOST_FIELDS = {
@@ -299,6 +339,10 @@ HOST_FIELDS = {
                                lambda v: round(v / 1024, 1)),
     "uptime_days": _direct("summary.quickStats.uptime",
                            lambda v: round(v / 86400, 1)),
+    "networks": _ref_list("network", vim.Network),
+    "network_count": _ref_count("network"),
+    "datastores": _ref_list("datastore", vim.Datastore),
+    "datastore_count": _ref_count("datastore"),
 }
 
 DATASTORE_FIELDS = {
@@ -335,6 +379,10 @@ CLUSTER_FIELDS = {
     "drs_enabled": _direct("configuration.drsConfig.enabled"),
     "ha_enabled": _direct("configuration.dasConfig.enabled"),
     "overall_status": _direct("overallStatus", str),
+    "networks": _ref_list("network", vim.Network),
+    "network_count": _ref_count("network"),
+    "datastores": _ref_list("datastore", vim.Datastore),
+    "datastore_count": _ref_count("datastore"),
 }
 
 
@@ -423,18 +471,30 @@ def validate_query(object_type, filters, group_by, fields, sort_by=None):
 
 
 def aggregate(rows, group_by):
-    """Count rows per distinct value of group_by; None becomes '(unknown)'."""
+    """Count rows per distinct value of group_by; None becomes '(unknown)'.
+
+    A row whose value is a list (membership field, e.g. networks) counts
+    once per element — a multi-homed VM appears under every network it is
+    attached to; an empty list counts under '(none)'."""
     counts = {}
     for row in rows:
         value = row.get(group_by)
-        key = "(unknown)" if value is None else str(value)
-        counts[key] = counts.get(key, 0) + 1
+        if isinstance(value, list):
+            keys = [str(element) for element in value] if value else ["(none)"]
+        else:
+            keys = ["(unknown)" if value is None else str(value)]
+        for key in keys:
+            counts[key] = counts.get(key, 0) + 1
     return sorted(counts.items(), key=lambda item: (-item[1], item[0]))
 
 
-def format_distribution(pairs, group_by, type_label, limit=0):
-    total = sum(count for _, count in pairs)
-    if total == 0:
+def format_distribution(pairs, group_by, type_label, limit=0, total=None):
+    """total: row count to base percentages on. Defaults to the sum of the
+    pair counts — pass the real row count for membership fields, where one
+    row can appear in several buckets (percentages may then exceed 100%)."""
+    if total is None:
+        total = sum(count for _, count in pairs)
+    if not pairs or total == 0:
         return f"No matching {type_label}"
     shown = pairs if limit == 0 or len(pairs) <= limit else pairs[:limit]
     lines = [f"Distribution of {group_by} across {total} {type_label}:", ""]
@@ -457,9 +517,17 @@ def format_rows(rows, field_names, total, type_label, limit):
     if len(shown) < matched:
         header += f" (showing {len(shown)} — refine filters or raise limit)"
     lines = [header + ":", ""]
+
+    def display(value):
+        if isinstance(value, list):
+            return ", ".join(str(v) for v in value) if value else "(none)"
+        return value
+
     for row in shown:
-        rest = ", ".join(f"{name}: {row.get(name)}" for name in field_names[1:])
-        lines.append(f"• {row.get(field_names[0])}" + (f" — {rest}" if rest else ""))
+        rest = ", ".join(f"{name}: {display(row.get(name))}"
+                         for name in field_names[1:])
+        lines.append(f"• {display(row.get(field_names[0]))}"
+                     + (f" — {rest}" if rest else ""))
     return "\n".join(lines)
 
 
@@ -540,6 +608,14 @@ def fetch_inventory(client, object_type, field_names, container=None):
             for obj, props in _collect(
                 client, vim.ComputeResource, {vim.ComputeResource: {"name"}})
         }
+    resolve_types = {field_map[f].get("resolve") for f in field_names}
+    resolve_types.discard(None)
+    if resolve_types:
+        ctx["ref_names"] = {
+            obj._moId: props.get("name")
+            for ref_type in sorted(resolve_types, key=lambda t: t.__name__)
+            for obj, props in _collect(client, ref_type, {ref_type: {"name"}})
+        }
 
     rows = []
     for obj, props in raw:
@@ -604,7 +680,7 @@ def run_inventory_query(client, object_type, filters=None, group_by=None,
     matched = apply_filters(rows, filters or [])
     if group_by:
         return format_distribution(aggregate(matched, group_by), group_by,
-                                   cfg["label"], limit)
+                                   cfg["label"], limit, total=len(matched))
     if sort_by:
         matched = sort_rows(matched, sort_by, descending)
     return format_rows(matched, display_fields, total, cfg["label"], limit)

@@ -573,6 +573,177 @@ class TestFetchSnapshotRows:
         assert rows[0]["vm_name"] == "web01"
 
 
+class TestMultiValueFilters:
+    """List-valued fields (e.g. a VM's networks) match if ANY element matches."""
+
+    ROWS = [
+        {"name": "web01", "networks": ["dv OFFICE VLAN 11", "dv DMZ MS VLAN 26"]},
+        {"name": "db01", "networks": ["dv OFFICE VLAN 11"]},
+        {"name": "iso01", "networks": []},
+        {"name": "ghost", "networks": None},
+    ]
+
+    def test_eq_matches_any_element_case_insensitively(self):
+        out = apply_filters(self.ROWS, [fc("networks", "eq", "dv office vlan 11")])
+        assert names(out) == ["web01", "db01"]
+
+    def test_ne_keeps_rows_where_no_element_matches(self):
+        out = apply_filters(self.ROWS, [fc("networks", "ne", "dv OFFICE VLAN 11")])
+        assert names(out) == ["iso01", "ghost"]
+
+    def test_contains_matches_substring_of_any_element(self):
+        out = apply_filters(self.ROWS, [fc("networks", "contains", "dmz")])
+        assert names(out) == ["web01"]
+
+    def test_not_contains_keeps_empty_and_none(self):
+        out = apply_filters(self.ROWS, [fc("networks", "not_contains", "dmz")])
+        assert names(out) == ["db01", "iso01", "ghost"]
+
+    def test_in_matches_any_element_against_options(self):
+        out = apply_filters(self.ROWS, [
+            fc("networks", "in", ["dv DMZ MS VLAN 26", "nope"])])
+        assert names(out) == ["web01"]
+
+    def test_numeric_ops_never_match_lists(self):
+        assert apply_filters(self.ROWS, [fc("networks", "gt", 1)]) == []
+        assert apply_filters(self.ROWS, [fc("networks", "lte", 99)]) == []
+
+
+class TestMultiValueAggregateSortFormat:
+    ROWS = [
+        {"name": "web01", "networks": ["dv OFFICE VLAN 11", "dv DMZ MS VLAN 26"]},
+        {"name": "db01", "networks": ["dv OFFICE VLAN 11"]},
+        {"name": "iso01", "networks": []},
+        {"name": "ghost", "networks": None},
+    ]
+
+    def test_aggregate_counts_each_element_once_per_row(self):
+        assert aggregate(self.ROWS, "networks") == [
+            ("dv OFFICE VLAN 11", 2), ("(none)", 1), ("(unknown)", 1),
+            ("dv DMZ MS VLAN 26", 1)]
+
+    def test_distribution_percentages_are_relative_to_row_count(self):
+        pairs = aggregate(self.ROWS, "networks")
+        out = format_distribution(pairs, "networks", "VMs", total=len(self.ROWS))
+        assert "across 4 VMs" in out
+        assert "dv OFFICE VLAN 11: 2 (50.0%)" in out
+
+    def test_sort_rows_orders_by_joined_elements_with_none_last(self):
+        out = sort_rows(self.ROWS, "networks", descending=False)
+        assert names(out) == ["iso01", "db01", "web01", "ghost"]
+
+    def test_format_rows_joins_list_values(self):
+        out = format_rows(
+            [{"name": "web01", "networks": ["dv OFFICE VLAN 11", "dv Storage"]}],
+            ["name", "networks"], 1, "VMs", 50)
+        assert "networks: dv OFFICE VLAN 11, dv Storage" in out
+
+    def test_format_rows_renders_empty_list_as_none(self):
+        out = format_rows([{"name": "iso01", "networks": []}],
+                          ["name", "networks"], 1, "VMs", 50)
+        assert "networks: (none)" in out
+
+
+from pyVmomi import vim  # noqa: E402
+from vsphere_mcp_server.inventory import (  # noqa: E402
+    CLUSTER_FIELDS,
+    HOST_FIELDS,
+    VM_FIELDS,
+)
+
+
+class TestRefListFields:
+    """Fields backed by managed-object-reference lists (networks, datastores)
+    resolve to name lists via one shared bulk lookup in ctx["ref_names"]."""
+
+    def test_vm_networks_resolves_ref_names_preserving_order(self):
+        props = {"network": [SimpleNamespace(_moId="dvportgroup-21"),
+                             SimpleNamespace(_moId="network-7")]}
+        ctx = {"ref_names": {"dvportgroup-21": "dv DMZ MS VLAN 26",
+                             "network-7": "VM Network"}}
+        assert VM_FIELDS["networks"]["extract"](props, ctx) == [
+            "dv DMZ MS VLAN 26", "VM Network"]
+        assert VM_FIELDS["network_count"]["extract"](props, ctx) == 2
+
+    def test_vm_datastores_resolves_ref_names(self):
+        props = {"datastore": [SimpleNamespace(_moId="datastore-11")]}
+        ctx = {"ref_names": {"datastore-11": "vmware_prod_store"}}
+        assert VM_FIELDS["datastores"]["extract"](props, ctx) == [
+            "vmware_prod_store"]
+        assert VM_FIELDS["datastore_count"]["extract"](props, ctx) == 1
+
+    def test_host_and_cluster_expose_networks_and_datastores(self):
+        props = {"network": [SimpleNamespace(_moId="network-7")],
+                 "datastore": [SimpleNamespace(_moId="datastore-11")]}
+        ctx = {"ref_names": {"network-7": "VM Network",
+                             "datastore-11": "vmware_prod_store"}}
+        for field_map in (HOST_FIELDS, CLUSTER_FIELDS):
+            assert field_map["networks"]["extract"](props, ctx) == ["VM Network"]
+            assert field_map["datastores"]["extract"](props, ctx) == [
+                "vmware_prod_store"]
+            assert field_map["network_count"]["extract"](props, ctx) == 1
+            assert field_map["datastore_count"]["extract"](props, ctx) == 1
+
+    def test_unresolvable_ref_falls_back_to_moid(self):
+        props = {"network": [SimpleNamespace(_moId="network-99")]}
+        assert VM_FIELDS["networks"]["extract"](props, {}) == ["network-99"]
+
+    def test_vm_without_networks_yields_empty_list_and_zero(self):
+        assert VM_FIELDS["networks"]["extract"]({}, {}) == []
+        assert VM_FIELDS["network_count"]["extract"]({}, {}) == 0
+
+    def test_fetch_inventory_resolves_ref_names_in_one_bulk_call_per_type(
+            self, monkeypatch):
+        calls = []
+
+        def fake_collect(client, vim_type, path_specs, container=None):
+            calls.append(vim_type)
+            if vim_type is vim.VirtualMachine:
+                return [
+                    (SimpleNamespace(_moId="vm-1"), {
+                        "name": "web01",
+                        "network": [SimpleNamespace(_moId="net-1"),
+                                    SimpleNamespace(_moId="net-2")],
+                        "datastore": [SimpleNamespace(_moId="ds-1")]}),
+                    (SimpleNamespace(_moId="vm-2"), {"name": "iso01"}),
+                ]
+            if vim_type is vim.Network:
+                return [(SimpleNamespace(_moId="net-1"),
+                         {"name": "dv OFFICE VLAN 11"}),
+                        (SimpleNamespace(_moId="net-2"), {"name": "dv Storage"})]
+            if vim_type is vim.Datastore:
+                return [(SimpleNamespace(_moId="ds-1"),
+                         {"name": "vmware_prod_store"})]
+            raise AssertionError(f"unexpected collect for {vim_type}")
+
+        monkeypatch.setattr(inventory, "_collect", fake_collect)
+        rows = inventory.fetch_inventory(
+            None, "vm",
+            ["name", "networks", "network_count", "datastores"])
+        assert rows[0]["networks"] == ["dv OFFICE VLAN 11", "dv Storage"]
+        assert rows[0]["network_count"] == 2
+        assert rows[0]["datastores"] == ["vmware_prod_store"]
+        assert rows[1]["networks"] == []
+        assert rows[1]["network_count"] == 0
+        assert calls.count(vim.Network) == 1  # one bulk lookup, not per-VM
+        assert calls.count(vim.Datastore) == 1
+
+    def test_run_inventory_query_group_by_networks_end_to_end(
+            self, monkeypatch):
+        rows = [
+            {"networks": ["dv OFFICE VLAN 11", "dv DMZ MS VLAN 26"]},
+            {"networks": ["dv OFFICE VLAN 11"]},
+            {"networks": []},
+        ]
+        monkeypatch.setattr(
+            inventory, "fetch_inventory",
+            lambda client, object_type, field_names, container=None: rows)
+        out = inventory.run_inventory_query(None, "vm", group_by="networks")
+        assert "across 3 VMs" in out
+        assert "dv OFFICE VLAN 11: 2 (66.7%)" in out
+        assert "(none): 1" in out
+
+
 class TestSnapshotQueries:
     """Fleet-wide snapshot queries end-to-end through run_inventory_query."""
 

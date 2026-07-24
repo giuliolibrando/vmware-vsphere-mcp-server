@@ -183,6 +183,15 @@ Examples:
   `list_vm_snapshots(sort_by="age_days", limit=10)`
 - Snapshots older than 30 days, per VM:
   `list_vm_snapshots(filters=[{"field": "age_days", "op": "gt", "value": 30}], group_by="vm_name")`
+- Which VMs are in which network?
+  `list_vms(fields=["name", "networks"], limit=0)` — or
+  `list_vms(group_by="networks")` for the VM count per portgroup
+- VMs attached to any DMZ portgroup:
+  `list_vms(filters=[{"field": "networks", "op": "contains", "value": "DMZ"}])`
+- VMs stored on a specific datastore:
+  `list_vms(filters=[{"field": "datastores", "op": "eq", "value": "prod_store"}])`
+- Hosts mounting fewer than two datastores:
+  `list_hosts(filters=[{"field": "datastore_count", "op": "lt", "value": 2}])`
 
 Operators: `eq, ne, contains, not_contains, gt, gte, lt, lte, in` (conditions
 are ANDed, string matching is case-insensitive). Range operators compare
@@ -190,6 +199,14 @@ numbers, and also prefix-number strings like `vmx-13` by their trailing
 number. `sort_by` orders by any queryable field (`descending` defaults to
 true — biggest/latest first). Each tool's description lists its queryable
 fields. `limit` defaults to 50 rows (`0` = unlimited).
+
+Membership fields: VMs, hosts, and clusters expose `networks` and
+`datastores` (name lists, resolved in one bulk lookup) plus
+`network_count`/`datastore_count`. On these list fields `eq`/`contains`
+match if ANY member matches, `ne`/`not_contains` only if NO member does,
+and `group_by` counts an object once per member (a multi-homed VM appears
+under every network it is attached to; objects with no members fall under
+`(none)`).
 
 ## Security Features
 

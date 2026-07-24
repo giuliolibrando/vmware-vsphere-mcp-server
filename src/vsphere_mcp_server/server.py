@@ -72,9 +72,12 @@ def list_vms(
     tools_status, tools_version, ip_address, guest_hostname, uuid,
     annotation, host, cluster, storage_committed_gb, storage_provisioned_gb,
     disk_count, snapshot_count, boot_time, cpu_usage_mhz, memory_usage_gb,
-    uptime_days.
+    uptime_days, networks, network_count, datastores, datastore_count.
     Filter ops: eq, ne, contains, not_contains, gt, gte, lt, lte, in
     (conditions are ANDed; string matching is case-insensitive).
+    networks/datastores are membership lists (portgroup/datastore names):
+    eq/contains match if ANY member matches, and group_by counts a VM once
+    per member — so group_by="networks" is the VM-count-per-network map.
     Note: power_state values are pyVmomi-style: poweredOn / poweredOff /
     suspended.
 
@@ -89,6 +92,14 @@ def list_vms(
       Powered-on VMs that have snapshots:
         filters=[{"field": "power_state", "op": "eq", "value": "poweredOn"},
                  {"field": "snapshot_count", "op": "gt", "value": 0}]
+      Which VMs are in which network?
+        fields=["name", "power_state", "networks"], limit=0
+        (or group_by="networks" for just the counts)
+      VMs attached to the DMZ portgroups:
+        filters=[{"field": "networks", "op": "contains", "value": "DMZ"}]
+      VMs with a disk on a given datastore:
+        filters=[{"field": "datastores", "op": "eq",
+                  "value": "vmware_prod_store"}]
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
@@ -276,15 +287,22 @@ def list_hosts(
     Queryable fields: name, host_id, connection_state, power_state,
     maintenance_mode, esxi_version, build, vendor, model, cpu_model,
     cpu_cores, cpu_threads, memory_gb, cluster, vm_count, cpu_usage_mhz,
-    memory_usage_gb, uptime_days.
+    memory_usage_gb, uptime_days, networks, network_count, datastores,
+    datastore_count.
     Filter ops: eq, ne, contains, not_contains, gt, gte, lt, lte, in
     (conditions are ANDed; string matching is case-insensitive).
+    networks/datastores are membership lists (names): eq/contains match if
+    ANY member matches; group_by counts a host once per member.
 
     Examples:
       ESXi version distribution: group_by="esxi_version"
       Hosts in maintenance mode:
         filters=[{"field": "maintenance_mode", "op": "eq", "value": true}]
       Busiest hosts first: sort_by="cpu_usage_mhz"
+      Hosts that can see a datastore (mount check):
+        filters=[{"field": "datastores", "op": "eq", "value": "prod_store"}]
+      Single-point-of-failure storage: filters=[{"field": "datastore_count",
+        "op": "lt", "value": 2}]
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
@@ -2050,15 +2068,19 @@ def list_clusters_pyvmomi(
     every datacenter).
 
     Queryable fields: name, cluster_id, host_count, effective_host_count,
-    total_cpu_ghz, total_memory_gb, drs_enabled, ha_enabled, overall_status.
+    total_cpu_ghz, total_memory_gb, drs_enabled, ha_enabled, overall_status,
+    networks, network_count, datastores, datastore_count.
     Filter ops: eq, ne, contains, not_contains, gt, gte, lt, lte, in
     (conditions are ANDed; string matching is case-insensitive).
+    networks/datastores are membership lists (names): eq/contains match if
+    ANY member matches; group_by counts a cluster once per member.
 
     Examples:
       Clusters without DRS:
         filters=[{"field": "drs_enabled", "op": "eq", "value": false}]
       Host count per cluster: fields=["name", "host_count"]
       Largest clusters first: sort_by="total_memory_gb"
+      Datastores visible to a cluster: fields=["name", "datastores"]
 
     Args:
         datacenter: Datacenter name (required for the basic listing;
