@@ -1252,8 +1252,8 @@ def list_vm_snapshots(
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
         filters: list of {field, op, value} conditions, ANDed (fleet mode)
         group_by: return only a count distribution of this field (fleet mode)
-        fields: fields shown per snapshot (default: name, vm_name, age_days, created)
-        limit: max rows in listing or distribution output (default 50; 0 = unlimited)
+        fields: fields shown per snapshot (default: name, vm_name, age_days, created) (fleet mode)
+        limit: max rows in listing or distribution output (default 50; 0 = unlimited) (fleet mode)
         sort_by: order rows by this field before applying limit (fleet mode)
         descending: sort direction (default True = biggest/oldest first)
     """
