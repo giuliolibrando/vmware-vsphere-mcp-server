@@ -555,3 +555,70 @@ class TestFetchSnapshotRows:
         rows = inventory.fetch_inventory(None, "snapshot", ["name", "age_days"])
         assert len(rows) == 3
         assert rows[0]["vm_name"] == "web01"
+
+
+class TestSnapshotQueries:
+    """Fleet-wide snapshot queries end-to-end through run_inventory_query."""
+
+    @staticmethod
+    def _pairs():
+        now = datetime.now(timezone.utc)
+        return [
+            (SimpleNamespace(_moId="vm-1"), {
+                "name": "web01",
+                "snapshot.rootSnapshotList": [
+                    _snap_node("pre-upgrade", "snapshot-1",
+                               now - timedelta(days=45)),
+                    _snap_node("weekly", "snapshot-2",
+                               now - timedelta(days=2))],
+                "snapshot.currentSnapshot": SimpleNamespace(_moId="snapshot-2"),
+            }),
+            (SimpleNamespace(_moId="vm-2"), {
+                "name": "db01",
+                "snapshot.rootSnapshotList": [
+                    _snap_node("before-patch", "snapshot-3",
+                               now - timedelta(days=10))],
+                "snapshot.currentSnapshot": SimpleNamespace(_moId="snapshot-3"),
+            }),
+        ]
+
+    def _patch(self, monkeypatch):
+        monkeypatch.setattr(
+            inventory, "_collect",
+            lambda client, vim_type, path_specs, container=None: self._pairs())
+
+    def test_filter_snapshots_older_than_30_days(self, monkeypatch):
+        self._patch(monkeypatch)
+        out = inventory.run_inventory_query(
+            None, "snapshot", filters=[fc("age_days", "gt", 30)])
+        assert "Matched 1 of 3 snapshots" in out
+        assert "pre-upgrade" in out
+        assert "weekly" not in out and "before-patch" not in out
+
+    def test_sort_by_age_days_puts_oldest_first(self, monkeypatch):
+        self._patch(monkeypatch)
+        out = inventory.run_inventory_query(
+            None, "snapshot", sort_by="age_days")
+        assert (out.index("pre-upgrade") < out.index("before-patch")
+                < out.index("weekly"))
+
+    def test_group_by_vm_name_counts_snapshots_per_vm(self, monkeypatch):
+        self._patch(monkeypatch)
+        out = inventory.run_inventory_query(
+            None, "snapshot", group_by="vm_name")
+        assert "web01: 2" in out
+        assert "db01: 1" in out
+
+    def test_default_fields_render_vm_context(self, monkeypatch):
+        self._patch(monkeypatch)
+        out = inventory.run_inventory_query(None, "snapshot")
+        assert "vm_name: web01" in out
+        assert "age_days:" in out
+
+    def test_unknown_snapshot_field_short_circuits(self, monkeypatch):
+        def boom(*args, **kwargs):
+            raise AssertionError("_collect must not be called")
+        monkeypatch.setattr(inventory, "_collect", boom)
+        out = inventory.run_inventory_query(
+            None, "snapshot", filters=[fc("host", "eq", "esx1")])
+        assert "Unknown field" in out and "age_days" in out
