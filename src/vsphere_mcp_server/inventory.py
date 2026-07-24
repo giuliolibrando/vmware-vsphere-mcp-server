@@ -10,7 +10,7 @@ calling LLM never has to ingest the full inventory.
 from typing import List, Literal, Union
 
 from pydantic import BaseModel
-from pyVmomi import vim
+from pyVmomi import vim, vmodl
 
 
 class FilterCondition(BaseModel):
@@ -275,3 +275,115 @@ def format_rows(rows, field_names, total, type_label, limit):
         rest = ", ".join(f"{name}: {row.get(name)}" for name in field_names[1:])
         lines.append(f"• {row.get(field_names[0])}" + (f" — {rest}" if rest else ""))
     return "\n".join(lines)
+
+
+# ── Bulk fetch (one PropertyCollector round-trip per object type) ─
+
+def _collect(client, vim_type, path_specs, container=None):
+    """Fetch properties for every object of vim_type under container.
+
+    path_specs: {spec_vim_type: [property paths]} — one PropertySpec per
+    entry, so subtype-only properties (e.g. DVPortgroup config) can ride
+    along with the base type's paths.
+    Returns a list of (managed_object, {path: value}) tuples. Properties
+    vCenter does not return (unset / not applicable) are simply absent.
+    """
+    view = client.get_container_view(vim_type, container=container)
+    try:
+        collector = client.content.propertyCollector
+        traversal_spec = vmodl.query.PropertyCollector.TraversalSpec(
+            name="traverse", type=vim.view.ContainerView, path="view", skip=False)
+        obj_spec = vmodl.query.PropertyCollector.ObjectSpec(
+            obj=view, skip=True, selectSet=[traversal_spec])
+        prop_specs = [
+            vmodl.query.PropertyCollector.PropertySpec(
+                type=spec_type, pathSet=sorted(paths), all=False)
+            for spec_type, paths in path_specs.items()
+        ]
+        filter_spec = vmodl.query.PropertyCollector.FilterSpec(
+            objectSet=[obj_spec], propSet=prop_specs)
+        options = vmodl.query.PropertyCollector.RetrieveOptions()
+
+        results = []
+        response = collector.RetrievePropertiesEx([filter_spec], options)
+        while response:
+            for obj_content in response.objects:
+                props = {p.name: p.val for p in obj_content.propSet}
+                results.append((obj_content.obj, props))
+            if not response.token:
+                break
+            response = collector.ContinueRetrievePropertiesEx(response.token)
+        return results
+    finally:
+        view.Destroy()
+
+
+def fetch_inventory(client, object_type, field_names, container=None):
+    """Fetch field_names for all objects of object_type; returns list of dicts."""
+    cfg = OBJECT_TYPES[object_type]
+    base_type = cfg["vim_type"]
+    field_map = cfg["fields"]
+
+    path_specs = {}
+    for field_name in field_names:
+        spec = field_map[field_name]
+        spec_type = spec.get("spec_type", base_type)
+        path_specs.setdefault(spec_type, set()).update(spec["paths"])
+    # The base PropertySpec must not be empty; "name" is always safe.
+    path_specs.setdefault(base_type, set()).add("name")
+
+    raw = _collect(client, base_type, path_specs, container=container)
+
+    # Resolve managed-object references (host/cluster) to names with bulk
+    # lookups keyed by moId — never per-object calls.
+    ctx = {}
+    if object_type == "vm" and ("host" in field_names or "cluster" in field_names):
+        host_paths = {vim.HostSystem: {"name", "parent"}}
+        ctx["host_info"] = {
+            obj._moId: props
+            for obj, props in _collect(client, vim.HostSystem, host_paths)
+        }
+    if "cluster" in field_names and object_type in ("vm", "host"):
+        ctx["cr_names"] = {
+            obj._moId: props.get("name")
+            for obj, props in _collect(
+                client, vim.ComputeResource, {vim.ComputeResource: {"name"}})
+        }
+
+    rows = []
+    for obj, props in raw:
+        props["_moId"] = obj._moId
+        props["_type"] = type(obj).__name__
+        row = {}
+        for field_name in field_names:
+            try:
+                row[field_name] = field_map[field_name]["extract"](props, ctx)
+            except Exception:
+                row[field_name] = None
+        rows.append(row)
+    return rows
+
+
+def run_inventory_query(client, object_type, filters=None, group_by=None,
+                        fields=None, limit=50, container=None):
+    """Validate → bulk-fetch → filter → aggregate or list. Returns display text."""
+    error = validate_query(object_type, filters, group_by, fields)
+    if error:
+        return error
+    cfg = OBJECT_TYPES[object_type]
+    display_fields = fields or cfg["default_fields"]
+    filter_fields = {c.field for c in (filters or [])}
+    if group_by and fields is None:
+        needed = {group_by} | filter_fields
+    else:
+        needed = set(display_fields) | filter_fields
+        if group_by:
+            needed.add(group_by)
+    rows = fetch_inventory(client, object_type, sorted(needed),
+                           container=container)
+    total = len(rows)
+    matched = apply_filters(rows, filters or [])
+    if group_by:
+        return format_distribution(aggregate(matched, group_by), group_by,
+                                   cfg["label"])
+    return format_rows(matched, display_fields, total, cfg["label"], limit)

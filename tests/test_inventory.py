@@ -161,3 +161,37 @@ class TestFormatRows:
             ["name", "memory_mb"], 1, "VMs", 50)
         assert "• db01 — memory_mb: 4096" in out
         assert "Ubuntu" not in out
+
+
+from vsphere_mcp_server import inventory
+
+
+class TestRunInventoryQuery:
+    def test_group_by_returns_distribution_only(self, monkeypatch):
+        rows = [{"guest_os": "Ubuntu"}, {"guest_os": "Ubuntu"},
+                {"guest_os": "Windows"}]
+        monkeypatch.setattr(
+            inventory, "fetch_inventory",
+            lambda client, object_type, field_names, container=None: rows)
+        out = inventory.run_inventory_query(None, "vm", group_by="guest_os")
+        assert "Ubuntu: 2 (66.7%)" in out
+        assert "Windows: 1 (33.3%)" in out
+
+    def test_filters_and_limit_in_listing(self, monkeypatch):
+        rows = [{"name": f"vm-{i:03d}", "power_state": "poweredOn",
+                 "guest_os": "Ubuntu"} for i in range(80)]
+        monkeypatch.setattr(
+            inventory, "fetch_inventory",
+            lambda client, object_type, field_names, container=None: rows)
+        out = inventory.run_inventory_query(
+            None, "vm",
+            filters=[fc("power_state", "eq", "poweredOn")], limit=50)
+        assert "Matched 80 of 80 VMs (showing 50" in out
+
+    def test_validation_error_short_circuits_without_fetching(self, monkeypatch):
+        def boom(*args, **kwargs):
+            raise AssertionError("fetch_inventory must not be called")
+        monkeypatch.setattr(inventory, "fetch_inventory", boom)
+        out = inventory.run_inventory_query(
+            None, "vm", filters=[fc("bogus", "eq", 1)])
+        assert "Unknown field" in out and "bogus" in out
