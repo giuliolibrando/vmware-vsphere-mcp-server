@@ -8,6 +8,7 @@ from mcp.server.fastmcp import FastMCP
 
 from .vsphere_client import VSphereClient
 from .pyvmomi_client import PyVmomiClient
+from .inventory import FilterCondition, run_inventory_query
 from pyVmomi import vim, vmodl
 
 # Initialize MCP server
@@ -30,16 +31,60 @@ def _handle_error(e: Exception, operation: str) -> str:
 
 # VM Management Tools
 @mcp.tool()
-def list_vms(hostname: str = None) -> str:
-    """List all virtual machines with basic information.
+def list_vms(
+    hostname: str = None,
+    filters: List[FilterCondition] = None,
+    group_by: str = None,
+    fields: List[str] = None,
+    limit: int = 50,
+) -> str:
+    """List, filter, or count virtual machines.
+
+    Without filters/group_by/fields this is a basic listing. With any of
+    them, an in-process engine fetches properties for ALL VMs in one call,
+    filters/aggregates server-side, and returns only the result — use this
+    instead of listing everything and filtering yourself.
+
+    Queryable fields: name, vm_id, power_state, connection_state, guest_os,
+    guest_os_running, hardware_version, cpu_count, memory_mb, template,
+    tools_status, tools_version, ip_address, guest_hostname, uuid,
+    annotation, host, cluster, storage_committed_gb, snapshot_count,
+    boot_time.
+    Filter ops: eq, ne, contains, not_contains, gt, gte, lt, lte, in
+    (conditions are ANDed; string matching is case-insensitive).
+
+    Examples:
+      Which VMs run hardware version vmx-13?
+        filters=[{"field": "hardware_version", "op": "eq", "value": "vmx-13"}]
+      Show the OS distribution:
+        group_by="guest_os"
+      Powered-on VMs that have snapshots:
+        filters=[{"field": "power_state", "op": "eq", "value": "poweredOn"},
+                 {"field": "snapshot_count", "op": "gt", "value": 0}]
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
+        filters: list of {field, op, value} conditions, ANDed
+        group_by: return only a count distribution of this field
+        fields: fields shown per VM (default: name, power_state, guest_os)
+        limit: max rows in listing output (default 50; 0 = unlimited)
     """
     if hostname is None:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
+
+    if filters or group_by or fields:
+        pv_client = PyVmomiClient(host=hostname)
+        try:
+            return run_inventory_query(pv_client, "vm", filters=filters,
+                                       group_by=group_by, fields=fields,
+                                       limit=limit)
+        except Exception as e:
+            return f"Error querying VMs via pyVmomi: {e}"
+        finally:
+            pv_client.close()
+
     client = VSphereClient(hostname)
     try:
         response = client.get("vcenter/vm")
@@ -48,8 +93,12 @@ def list_vms(hostname: str = None) -> str:
         if not vms:
             return "No virtual machines found"
 
-        result = f"Found {len(vms)} virtual machines:\n\n"
-        for vm in vms:
+        shown = vms if limit == 0 else vms[:limit]
+        result = f"Found {len(vms)} virtual machines"
+        if len(shown) < len(vms):
+            result += f" (showing {len(shown)} — refine with filters or raise limit)"
+        result += ":\n\n"
+        for vm in shown:
             result += f"• {vm.get('name', 'Unknown')} (ID: {vm.get('vm')})\n"
             result += f"  Power State: {vm.get('power_state', 'Unknown')}\n"
             result += f"  CPU Count: {vm.get('cpu_count', 'Unknown')}\n"
@@ -178,16 +227,53 @@ def power_off_vm(vm_id: str, hostname: str = None) -> str:
 
 # Infrastructure Tools
 @mcp.tool()
-def list_hosts(hostname: str = None) -> str:
-    """List all ESXi hosts.
+def list_hosts(
+    hostname: str = None,
+    filters: List[FilterCondition] = None,
+    group_by: str = None,
+    fields: List[str] = None,
+    limit: int = 50,
+) -> str:
+    """List, filter, or count ESXi hosts.
+
+    With filters/group_by/fields an in-process engine fetches properties for
+    ALL hosts in one call and returns only the filtered/aggregated result.
+
+    Queryable fields: name, host_id, connection_state, power_state,
+    maintenance_mode, esxi_version, build, vendor, model, cpu_model,
+    cpu_cores, cpu_threads, memory_gb, cluster, vm_count, cpu_usage_mhz,
+    memory_usage_gb, uptime_days.
+    Filter ops: eq, ne, contains, not_contains, gt, gte, lt, lte, in
+    (conditions are ANDed; string matching is case-insensitive).
+
+    Examples:
+      ESXi version distribution: group_by="esxi_version"
+      Hosts in maintenance mode:
+        filters=[{"field": "maintenance_mode", "op": "eq", "value": true}]
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
+        filters: list of {field, op, value} conditions, ANDed
+        group_by: return only a count distribution of this field
+        fields: fields shown per host (default: name, connection_state, esxi_version)
+        limit: max rows in listing output (default 50; 0 = unlimited)
     """
     if hostname is None:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
+
+    if filters or group_by or fields:
+        pv_client = PyVmomiClient(host=hostname)
+        try:
+            return run_inventory_query(pv_client, "host", filters=filters,
+                                       group_by=group_by, fields=fields,
+                                       limit=limit)
+        except Exception as e:
+            return f"Error querying hosts via pyVmomi: {e}"
+        finally:
+            pv_client.close()
+
     client = VSphereClient(hostname)
     try:
         response = client.get("vcenter/host")
@@ -196,8 +282,12 @@ def list_hosts(hostname: str = None) -> str:
         if not hosts:
             return "No ESXi hosts found"
 
-        result = f"Found {len(hosts)} ESXi hosts:\n\n"
-        for host in hosts:
+        shown = hosts if limit == 0 else hosts[:limit]
+        result = f"Found {len(hosts)} ESXi hosts"
+        if len(shown) < len(hosts):
+            result += f" (showing {len(shown)} — refine with filters or raise limit)"
+        result += ":\n\n"
+        for host in shown:
             result += f"• {host.get('name', 'Unknown')} (ID: {host.get('host')})\n"
             result += f"  Connection State: {host.get('connection_state', 'Unknown')}\n"
             result += f"  Power State: {host.get('power_state', 'Unknown')}\n\n"
