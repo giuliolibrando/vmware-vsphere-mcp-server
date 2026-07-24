@@ -392,6 +392,19 @@ class TestFlattenSnapshotTree:
         assert inventory.flatten_snapshot_tree(None) == []
         assert inventory.flatten_snapshot_tree([]) == []
 
+    def test_rows_carry_raw_created_datetime(self):
+        tree = [self._node("base", "snapshot-1")]
+        rows = inventory.flatten_snapshot_tree(tree)
+        assert rows[0]["created_dt"] == datetime(2026, 1, 2, 3, 4, 5)
+        assert rows[0]["created"] == "2026-01-02 03:04:05"
+
+    def test_created_none_yields_none_created_and_created_dt(self):
+        node = self._node("base", "snapshot-1")
+        node.createTime = None
+        rows = inventory.flatten_snapshot_tree([node])
+        assert rows[0]["created"] is None
+        assert rows[0]["created_dt"] is None
+
 
 class TestMatchSnapshot:
     ROWS = [

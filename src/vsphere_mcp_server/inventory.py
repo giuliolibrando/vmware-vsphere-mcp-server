@@ -144,6 +144,7 @@ def flatten_snapshot_tree(node_list):
                 "name": node.name,
                 "snapshot_id": getattr(node.snapshot, "_moId", None),
                 "created": str(node.createTime) if node.createTime else None,
+                "created_dt": node.createTime,
                 "state": str(node.state) if node.state else None,
                 "description": node.description or "",
                 "quiesced": bool(node.quiesced),
