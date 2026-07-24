@@ -396,16 +396,51 @@ def get_datacenter_details(hostname: str = None, datacenter_id: str = None) -> s
 
 
 @mcp.tool()
-def list_datastores(hostname: str = None) -> str:
-    """List all datastores with capacity information.
+def list_datastores(
+    hostname: str = None,
+    filters: List[FilterCondition] = None,
+    group_by: str = None,
+    fields: List[str] = None,
+    limit: int = 50,
+) -> str:
+    """List, filter, or count datastores.
+
+    With filters/group_by/fields an in-process engine fetches properties for
+    ALL datastores in one call and returns only the filtered/aggregated result.
+
+    Queryable fields: name, datastore_id, type, capacity_gb, free_gb,
+    free_pct, accessible, maintenance_mode, vm_count, host_count.
+    Filter ops: eq, ne, contains, not_contains, gt, gte, lt, lte, in
+    (conditions are ANDed; string matching is case-insensitive).
+
+    Examples:
+      Datastores below 10% free:
+        filters=[{"field": "free_pct", "op": "lt", "value": 10}]
+      Count by type: group_by="type"
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
+        filters: list of {field, op, value} conditions, ANDed
+        group_by: return only a count distribution of this field
+        fields: fields shown per datastore (default: name, type, capacity_gb, free_gb, free_pct)
+        limit: max rows in listing output (default 50; 0 = unlimited)
     """
     if hostname is None:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
+
+    if filters or group_by or fields:
+        pv_client = PyVmomiClient(host=hostname)
+        try:
+            return run_inventory_query(pv_client, "datastore", filters=filters,
+                                       group_by=group_by, fields=fields,
+                                       limit=limit)
+        except Exception as e:
+            return f"Error querying datastores via pyVmomi: {e}"
+        finally:
+            pv_client.close()
+
     client = VSphereClient(hostname)
     try:
         response = client.get("vcenter/datastore")
@@ -414,8 +449,12 @@ def list_datastores(hostname: str = None) -> str:
         if not datastores:
             return "No datastores found"
 
-        result = f"Found {len(datastores)} datastores:\n\n"
-        for ds in datastores:
+        shown = datastores if limit == 0 else datastores[:limit]
+        result = f"Found {len(datastores)} datastores"
+        if len(shown) < len(datastores):
+            result += f" (showing {len(shown)} — refine with filters or raise limit)"
+        result += ":\n\n"
+        for ds in shown:
             capacity = ds.get("capacity", 0)
             free_space = ds.get("free_space", 0)
             used_space = capacity - free_space
@@ -556,16 +595,52 @@ def get_folder_details(hostname: str = None, folder_id: str = None) -> str:
 
 # Network Tools
 @mcp.tool()
-def list_networks(hostname: str = None) -> str:
-    """List all networks with VLAN information.
+def list_networks(
+    hostname: str = None,
+    filters: List[FilterCondition] = None,
+    group_by: str = None,
+    fields: List[str] = None,
+    limit: int = 50,
+) -> str:
+    """List, filter, or count networks (standard and distributed portgroups).
+
+    With filters/group_by/fields an in-process engine fetches properties for
+    ALL networks in one call and returns only the filtered/aggregated result.
+
+    Queryable fields: name, network_id, type, vlan_id, vm_count.
+    (vlan_id is only available for distributed portgroups with a plain VLAN
+    ID; standard portgroups and trunk/PVLAN configs report None.)
+    Filter ops: eq, ne, contains, not_contains, gt, gte, lt, lte, in
+    (conditions are ANDed; string matching is case-insensitive).
+
+    Examples:
+      Distributed portgroups on VLAN 120:
+        filters=[{"field": "vlan_id", "op": "eq", "value": 120}]
+      Count by network type: group_by="type"
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
+        filters: list of {field, op, value} conditions, ANDed
+        group_by: return only a count distribution of this field
+        fields: fields shown per network (default: name, type, vlan_id)
+        limit: max rows in listing output (default 50; 0 = unlimited)
     """
     if hostname is None:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
+
+    if filters or group_by or fields:
+        pv_client = PyVmomiClient(host=hostname)
+        try:
+            return run_inventory_query(pv_client, "network", filters=filters,
+                                       group_by=group_by, fields=fields,
+                                       limit=limit)
+        except Exception as e:
+            return f"Error querying networks via pyVmomi: {e}"
+        finally:
+            pv_client.close()
+
     client = VSphereClient(hostname)
     try:
         response = client.get("vcenter/network")
@@ -574,8 +649,12 @@ def list_networks(hostname: str = None) -> str:
         if not networks:
             return "No networks found"
 
-        result = f"Found {len(networks)} networks:\n\n"
-        for network in networks:
+        shown = networks if limit == 0 else networks[:limit]
+        result = f"Found {len(networks)} networks"
+        if len(shown) < len(networks):
+            result += f" (showing {len(shown)} — refine with filters or raise limit)"
+        result += ":\n\n"
+        for network in shown:
             name = network.get("name", "Unknown")
             result += f"• {name} (ID: {network.get('network')})\n"
             result += f"  Type: {network.get('type', 'Unknown')}\n"
@@ -2008,23 +2087,57 @@ def list_datacenters_pyvmomi(hostname: str = None) -> str:
 
 
 @mcp.tool()
-def list_clusters_pyvmomi(datacenter: str = None, hostname: str = None) -> str:
-    """List all clusters in a datacenter using pyVmomi.
+def list_clusters_pyvmomi(
+    datacenter: str = None,
+    hostname: str = None,
+    filters: List[FilterCondition] = None,
+    group_by: str = None,
+    fields: List[str] = None,
+    limit: int = 50,
+) -> str:
+    """List, filter, or count clusters using pyVmomi.
+
+    With filters/group_by/fields an in-process engine fetches properties for
+    ALL clusters in one call and returns only the filtered/aggregated result;
+    datacenter is then optional (omit to query every datacenter).
+
+    Queryable fields: name, cluster_id, host_count, effective_host_count,
+    total_cpu_ghz, total_memory_gb, drs_enabled, ha_enabled, overall_status.
+    Filter ops: eq, ne, contains, not_contains, gt, gte, lt, lte, in
+    (conditions are ANDed; string matching is case-insensitive).
+
+    Examples:
+      Clusters without DRS:
+        filters=[{"field": "drs_enabled", "op": "eq", "value": false}]
+      Host count per cluster: fields=["name", "host_count"]
 
     Args:
-        datacenter: Datacenter name (required). Use list_datacenters_pyvmomi first.
+        datacenter: Datacenter name (required for the basic listing;
+            optional when using filters/group_by/fields)
         hostname: vSphere hostname (optional)
+        filters: list of {field, op, value} conditions, ANDed
+        group_by: return only a count distribution of this field
+        fields: fields shown per cluster (default: name, host_count, drs_enabled, ha_enabled)
+        limit: max rows in listing output (default 50; 0 = unlimited)
     """
-    if not datacenter:
-        return "Error: datacenter name is required."
-
     client = PyVmomiClient(host=hostname)
     try:
-        dc = client.find_datacenter(datacenter)
-        if dc is None:
-            return f"Datacenter '{datacenter}' not found."
+        container = None
+        if datacenter:
+            dc = client.find_datacenter(datacenter)
+            if dc is None:
+                return f"Datacenter '{datacenter}' not found."
+            container = dc.hostFolder
 
-        view = client.get_container_view(vim.ClusterComputeResource, container=dc.hostFolder)
+        if filters or group_by or fields:
+            return run_inventory_query(client, "cluster", filters=filters,
+                                       group_by=group_by, fields=fields,
+                                       limit=limit, container=container)
+
+        if not datacenter:
+            return "Error: datacenter name is required."
+
+        view = client.get_container_view(vim.ClusterComputeResource, container=container)
         try:
             clusters = list(view.view)
         finally:
@@ -2033,8 +2146,12 @@ def list_clusters_pyvmomi(datacenter: str = None, hostname: str = None) -> str:
         if not clusters:
             return f"No clusters found in datacenter '{datacenter}'."
 
-        result = f"Clusters in '{datacenter}' ({len(clusters)}):\n\n"
-        for cluster in clusters:
+        shown = clusters if limit == 0 else clusters[:limit]
+        result = f"Clusters in '{datacenter}' ({len(clusters)})"
+        if len(shown) < len(clusters):
+            result += f" (showing {len(shown)} — refine with filters or raise limit)"
+        result += ":\n\n"
+        for cluster in shown:
             result += f"  • {cluster.name}\n"
         return result.strip()
     except Exception as e:
