@@ -1211,16 +1211,51 @@ def get_vms_with_high_resource_usage(hostname: Optional[str] = None,
 
 # Snapshot Management Tools
 @mcp.tool()
-def list_vm_snapshots(vm_id: str, hostname: Optional[str] = None) -> str:
-    """List all snapshots for a specific VM, including the snapshot tree.
+def list_vm_snapshots(
+    vm_id: Optional[str] = None,
+    hostname: Optional[str] = None,
+    filters: Optional[List[FilterCondition]] = None,
+    group_by: Optional[str] = None,
+    fields: Optional[List[str]] = None,
+    limit: int = 50,
+    sort_by: Optional[str] = None,
+    descending: bool = True,
+) -> str:
+    """List snapshots for one VM, or query snapshots across ALL VMs.
 
     Uses pyVmomi: the vSphere Automation REST API has no snapshot
-    endpoints. Child snapshots are indented under their parent; the
-    currently active snapshot is marked.
+    endpoints.
+
+    With vm_id: the snapshot tree for that VM — children indented under
+    their parent, the currently active snapshot marked.
+
+    Without vm_id: an in-process engine fetches every snapshot of every
+    VM in one call, filters/sorts/aggregates server-side, and returns
+    only the result — use this for fleet-wide questions instead of
+    calling this tool once per VM.
+
+    Queryable fields (fleet mode): name, snapshot_id, vm_name, vm_id,
+    created, age_days, state, description, quiesced, depth, is_current.
+    Filter ops: eq, ne, contains, not_contains, gt, gte, lt, lte, in
+    (conditions are ANDed; string matching is case-insensitive).
+
+    Examples (fleet mode):
+      The 10 oldest snapshots anywhere:
+        sort_by="age_days", limit=10
+      Snapshots older than 30 days:
+        filters=[{"field": "age_days", "op": "gt", "value": 30}]
+      Snapshot count per VM:
+        group_by="vm_name"
 
     Args:
-        vm_id: Virtual machine ID (vm-###) or name
+        vm_id: Virtual machine ID (vm-###) or name; omit to query across all VMs
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
+        filters: list of {field, op, value} conditions, ANDed (fleet mode)
+        group_by: return only a count distribution of this field (fleet mode)
+        fields: fields shown per snapshot (default: name, vm_name, age_days, created)
+        limit: max rows in listing or distribution output (default 50; 0 = unlimited)
+        sort_by: order rows by this field before applying limit (fleet mode)
+        descending: sort direction (default True = biggest/oldest first)
     """
     if hostname is None:
         hostname = os.environ.get('VCENTER_HOST')
@@ -1229,6 +1264,11 @@ def list_vm_snapshots(vm_id: str, hostname: Optional[str] = None) -> str:
 
     pv_client = PyVmomiClient(host=hostname)
     try:
+        if vm_id is None:
+            return run_inventory_query(pv_client, "snapshot",
+                                       filters=filters, group_by=group_by,
+                                       fields=fields, limit=limit,
+                                       sort_by=sort_by, descending=descending)
         vm, error = find_object(pv_client, "vm", vm_id, "vm-")
         if vm is None:
             return error or f"VM '{vm_id}' not found"
@@ -1252,7 +1292,8 @@ def list_vm_snapshots(vm_id: str, hostname: Optional[str] = None) -> str:
                 lines.append(f"{indent}  Description: {row['description']}")
         return "\n".join(lines)
     except Exception as e:
-        return f"Error listing snapshots for VM {vm_id}: {e}"
+        target = f"VM {vm_id}" if vm_id else "all VMs"
+        return f"Error listing snapshots for {target}: {e}"
     finally:
         pv_client.close()
 
