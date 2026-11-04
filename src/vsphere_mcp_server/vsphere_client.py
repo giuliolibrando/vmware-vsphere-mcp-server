@@ -67,6 +67,9 @@ class VSphereClient:
                 self.authenticate()
                 response = self.session.get(f"{self.base_url}/{endpoint}", timeout=30)
 
+            if response.status_code == 404:
+                # vSphere API returns 404 for empty collections (e.g. no snapshots)
+                return {"value": []}
             response.raise_for_status()
             json_response: Dict[str, Any] = response.json()
             return json_response

@@ -26,6 +26,7 @@ services:
       # Server configuration
       - SERVER_HOST=0.0.0.0
       - SERVER_PORT=8000
+      - MCP_AUTH_TOKEN=${MCP_AUTH_TOKEN}
 
     # Restart container in case of error
     restart: unless-stopped
