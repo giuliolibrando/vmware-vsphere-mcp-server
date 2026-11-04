@@ -109,6 +109,40 @@ Add the following configuration to your `anythingllm_mcp_servers.json`. When
 }
 ```
 
+### Local stdio (Claude Desktop, etc.)
+
+For MCP clients that launch the server as a local subprocess over stdio
+(e.g. Claude Desktop) instead of connecting to an HTTP endpoint, set
+`MCP_TRANSPORT=stdio` and provide vCenter credentials directly in the
+client's own server config — stdio mode has no `.env` file and no
+interactive credential prompt, so `VCENTER_HOST`/`VCENTER_USER`/
+`VCENTER_PASSWORD` must be set here or the server exits immediately with
+an error.
+
+```json
+{
+  "mcpServers": {
+    "vsphere-mcp-server": {
+      "command": "python",
+      "args": ["-m", "vsphere_mcp_server.server"],
+      "env": {
+        "PYTHONPATH": "src",
+        "MCP_TRANSPORT": "stdio",
+        "VCENTER_HOST": "vcenter.domain.local",
+        "VCENTER_USER": "username@domain.local",
+        "VCENTER_PASSWORD": "your_password_here",
+        "INSECURE": "True"
+      }
+    }
+  }
+}
+```
+
+This path runs directly against a local Python install (`pip install -r
+requirements.txt` first) — it does not use Docker. The Docker/AnythingLLM
+streamable-HTTP setup above is unaffected and remains the recommended
+deployment for production use.
+
 ## Available Tools
 
 42 tools are exposed. `hostname` is optional everywhere and falls back to

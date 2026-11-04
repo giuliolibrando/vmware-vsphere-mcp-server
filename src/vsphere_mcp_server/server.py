@@ -2233,31 +2233,51 @@ def get_vm_networks_pyvmomi(vm_name: str, hostname: str | None = None) -> str:
 def main() -> None:
     """Main entry point for the MCP server."""
     import os
-    import uvicorn
+    import sys
     from dotenv import load_dotenv
 
     # Load environment variables
     load_dotenv()
 
+    raw_transport = os.environ.get("MCP_TRANSPORT", "streamable-http")
+    transport = raw_transport.strip().lower()
+    if transport not in ("stdio", "streamable-http"):
+        # Fail loudly rather than silently starting the HTTP server: a
+        # typo like "STDIO " or "streamable_http" would otherwise leave a
+        # stdio client hanging against an HTTP listener.
+        print(
+            f"Error: unsupported MCP_TRANSPORT value {raw_transport!r}. "
+            "Valid values: 'stdio', 'streamable-http' (default).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if transport == "stdio":
+        # stdio has no safe interactive fallback: credentials.py's
+        # _prompt_for_credentials() would read/write over the same
+        # stdin/stdout used for JSON-RPC and corrupt the protocol stream.
+        required_vars = ["VCENTER_HOST", "VCENTER_USER", "VCENTER_PASSWORD"]
+        missing = [name for name in required_vars if not os.environ.get(name)]
+        if missing:
+            print(
+                "Error: missing required environment variable(s) for stdio "
+                f"transport: {', '.join(missing)}. Set them in the MCP "
+                "client's server config — stdio cannot prompt interactively.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        mcp.run(transport="stdio")
+        return
+
     # Configure FastMCP settings for streamable HTTP transport
     mcp.settings.host = os.getenv("SERVER_HOST", "0.0.0.0")
     mcp.settings.port = int(os.getenv("SERVER_PORT", "8000"))
-    mcp.settings.stateless_http = True  # Enable stateless mode
+    mcp.settings.stateless_http = False
+    mcp.settings.json_response = True  # Return JSON instead of SSE for simpler parsing
 
-    # Build the app first, then optionally add auth middleware
-    starlette_app = mcp.streamable_http_app()
-    auth_token = os.getenv("MCP_AUTH_TOKEN")
-    if auth_token:
-        starlette_app.add_middleware(BearerTokenAuthMiddleware, token=auth_token)
-
-    # Run with uvicorn directly (not mcp.run, which would create a new app)
-    config = uvicorn.Config(
-        starlette_app,
-        host=mcp.settings.host,
-        port=mcp.settings.port,
-    )
-    server = uvicorn.Server(config)
-    server.run()
+    # Run with streamable HTTP transport
+    mcp.run(transport="streamable-http")
 
 
 # Export the Starlette/FastAPI app for testing and external use
