@@ -190,12 +190,9 @@ Snapshot tools use the SOAP API (vSphere 8 removed the REST endpoints).
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
-| `list_vm_snapshots` | List VM snapshots | `vm_id`, `hostname` |
-| `create_vm_snapshot` | Create VM snapshot | `vm_id`, `snapshot_name`, `description`, `hostname` |
-| `delete_vm_snapshot` | Delete VM snapshot | `vm_id`, `snapshot_name`, `confirm`, `hostname` |
-| `revert_vm_snapshot` | Revert VM to a snapshot | `vm_id`, `snapshot_name`, `confirm`, `hostname` |
-
-> Snapshots are addressed **by name** (SOAP lookup), not by snapshot ID.
+| `list_vm_snapshots` | List one VM's snapshots, or query all VMs' snapshots | `vm_id` (optional; omit for fleet-wide query), `hostname` (optional) |
+| `create_vm_snapshot` | Create VM snapshot | `vm_id`, `snapshot_name`, `description`, `hostname` (optional) |
+| `delete_vm_snapshot` | Delete VM snapshot  | `vm_id`, `snapshot_id`, `confirm`, `hostname` (optional) |
 
 ### Template Management
 | Tool | Description | Parameters |
@@ -234,6 +231,57 @@ Snapshot tools use the SOAP API (vSphere 8 removed the REST endpoints).
 | `clone_vm` | Clone a template | see above |
 
 **Destructive operations require explicit confirmation by setting `confirm=True`**
+
+## Filtering, counting, and ranking
+
+The list tools (`list_vms`, `list_hosts`, `list_datastores`, `list_networks`,
+`list_clusters_pyvmomi`) accept optional `filters`, `group_by`, `fields`,
+`sort_by`/`descending`, and `limit` parameters. Filtering, counting, and
+sorting run inside the server (one PropertyCollector round-trip for the whole
+inventory), so only the result — never the full inventory — reaches the LLM.
+`list_vm_snapshots` supports the same parameters in fleet mode: called
+without `vm_id`, it queries the snapshots of every VM in one round-trip.
+
+Examples:
+
+- Which VMs run hardware version vmx-13?
+  `list_vms(filters=[{"field": "hardware_version", "op": "eq", "value": "vmx-13"}])`
+- Show the guest OS distribution:
+  `list_vms(group_by="guest_os")` → one line per OS with count and percentage
+- Datastores below 10% free:
+  `list_datastores(filters=[{"field": "free_pct", "op": "lt", "value": 10}])`
+- VMs with hardware version vmx-13 or older:
+  `list_vms(filters=[{"field": "hardware_version", "op": "lte", "value": "vmx-13"}])`
+- The 10 largest VMs by provisioned storage:
+  `list_vms(sort_by="storage_provisioned_gb", fields=["name", "storage_provisioned_gb"], limit=10)`
+- The 10 oldest snapshots anywhere in the fleet:
+  `list_vm_snapshots(sort_by="age_days", limit=10)`
+- Snapshots older than 30 days, per VM:
+  `list_vm_snapshots(filters=[{"field": "age_days", "op": "gt", "value": 30}], group_by="vm_name")`
+- Which VMs are in which network?
+  `list_vms(fields=["name", "networks"], limit=0)` — or
+  `list_vms(group_by="networks")` for the VM count per portgroup
+- VMs attached to any DMZ portgroup:
+  `list_vms(filters=[{"field": "networks", "op": "contains", "value": "DMZ"}])`
+- VMs stored on a specific datastore:
+  `list_vms(filters=[{"field": "datastores", "op": "eq", "value": "prod_store"}])`
+- Hosts mounting fewer than two datastores:
+  `list_hosts(filters=[{"field": "datastore_count", "op": "lt", "value": 2}])`
+
+Operators: `eq, ne, contains, not_contains, gt, gte, lt, lte, in` (conditions
+are ANDed, string matching is case-insensitive). Range operators compare
+numbers, and also prefix-number strings like `vmx-13` by their trailing
+number. `sort_by` orders by any queryable field (`descending` defaults to
+true — biggest/latest first). Each tool's description lists its queryable
+fields. `limit` defaults to 50 rows (`0` = unlimited).
+
+Membership fields: VMs, hosts, and clusters expose `networks` and
+`datastores` (name lists, resolved in one bulk lookup) plus
+`network_count`/`datastore_count`. On these list fields `eq`/`contains`
+match if ANY member matches, `ne`/`not_contains` only if NO member does,
+and `group_by` counts an object once per member (a multi-homed VM appears
+under every network it is attached to; objects with no members fall under
+`(none)`).
 
 ## Security Features
 
