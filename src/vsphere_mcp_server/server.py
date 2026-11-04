@@ -3,7 +3,7 @@
 import os
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 from mcp.server.fastmcp import FastMCP
@@ -1442,62 +1442,64 @@ def list_templates(hostname: Optional[str] = None) -> str:
 # Advanced Monitoring Tools
 @mcp.tool(annotations=_READ_ONLY)
 def get_vm_events(vm_id: str, hostname: Optional[str] = None) -> str:
-    """Get recent events for a specific VM.
+    """Get recent events for a specific VM (last 30 days, newest first).
+
+    Uses pyVmomi's EventManager: the vSphere Automation REST API has no
+    VM events endpoint, so this works the same on vCenter 7.0 and 8.0.
 
     Args:
-        vm_id: Virtual machine ID or name
+        vm_id: Virtual machine ID (vm-###) or name
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
     """
     if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
-    
-    client = VSphereClient(hostname)
+
+    pv_client = PyVmomiClient(host=hostname)
     try:
-        # If vm_id doesn't start with 'vm-', assume it's a name and look up the ID
-        if not vm_id.startswith("vm-"):
-            vms_response = client.get("vcenter/vm")
-            vms = vms_response.get("value", [])
-            
-            vm_id_found = None
-            for vm in vms:
-                if vm.get("name", "").lower() == vm_id.lower():
-                    vm_id_found = vm.get("vm")
-                    break
-            
-            if not vm_id_found:
-                return f"Virtual machine '{vm_id}' not found by name"
-            vm_id = vm_id_found
-        
-        # Get VM events (this endpoint might vary based on vSphere version)
-        try:
-            response = client.get(f"vcenter/vm/{vm_id}/events")
-            events = response.get("value", [])
-            
-            if not events:
-                return f"No recent events found for VM {vm_id}"
-            
-            result = f"Recent Events for VM {vm_id}:\n\n"
-            for event in events[:10]:  # Show last 10 events
-                result += f"• {event.get('event_type', 'Unknown')}\n"
-                result += f"  Time: {event.get('time', 'Unknown')}\n"
-                result += f"  Description: {event.get('description', 'No description')}\n\n"
-            
-            return result.strip()
-            
-        except Exception:
-            return f"Events endpoint not available for VM {vm_id}. This feature requires specific vSphere API permissions."
-        
-    except (ConnectionError, ValueError, KeyError) as e:
+        vm, error = find_object(pv_client, "vm", vm_id, "vm-")
+        if vm is None:
+            return error or f"VM '{vm_id}' not found"
+
+        now = pv_client.si.CurrentTime()
+        spec = vim.event.EventFilterSpec(
+            entity=vim.event.EventFilterSpec.ByEntity(
+                entity=vm, recursion=vim.event.EventFilterSpec.RecursionOption.self),
+            # QueryEvents returns nothing on some vCenter builds without a
+            # time window.
+            time=vim.event.EventFilterSpec.ByTime(
+                beginTime=now - timedelta(days=30), endTime=now),
+            maxCount=500,
+        )
+        events = pv_client.content.eventManager.QueryEvents(spec) or []
+        if not events:
+            return f"No events found for VM {vm.name} ({vm._moId}) in the last 30 days"
+
+        recent = sorted(events, key=lambda ev: ev.createdTime, reverse=True)[:10]
+        result = f"Recent Events for VM {vm.name} ({vm._moId}):\n\n"
+        for ev in recent:
+            event_type = getattr(ev, 'eventTypeId', None) or type(ev).__name__.split('.')[-1]
+            created = ev.createdTime.strftime('%Y-%m-%d %H:%M:%S UTC') if ev.createdTime else 'Unknown'
+            result += f"• {event_type}\n"
+            result += f"  Time: {created}\n"
+            result += f"  Description: {ev.fullFormattedMessage or 'No description'}\n\n"
+
+        return result.strip()
+
+    except Exception as e:
         return _handle_error(e, f"getting events for VM {vm_id}")
     finally:
-        client.close()
+        pv_client.close()
 
 
 @mcp.tool(annotations=_READ_ONLY)
 def get_alarms(hostname: Optional[str] = None) -> str:
-    """Get active alarms in the vSphere environment.
+    """Get active (triggered) alarms in the vSphere environment.
+
+    Uses pyVmomi: reads triggeredAlarmState on the root folder, which
+    covers the whole inventory. The vSphere Automation REST API has no
+    alarms endpoint, so this works the same on vCenter 7.0 and 8.0.
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
@@ -1506,33 +1508,35 @@ def get_alarms(hostname: Optional[str] = None) -> str:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
-    
-    client = VSphereClient(hostname)
+
+    pv_client = PyVmomiClient(host=hostname)
     try:
-        # Get alarms (this endpoint might vary based on vSphere version)
-        try:
-            response = client.get("vcenter/alarm")
-            alarms = response.get("value", [])
-            
-            if not alarms:
-                return "No active alarms found"
-            
-            result = f"Active Alarms ({len(alarms)}):\n\n"
-            for alarm in alarms:
-                result += f"• {alarm.get('name', 'Unknown')}\n"
-                result += f"  Status: {alarm.get('status', 'Unknown')}\n"
-                result += f"  Severity: {alarm.get('severity', 'Unknown')}\n"
-                result += f"  Description: {alarm.get('description', 'No description')}\n\n"
-            
-            return result.strip()
-            
-        except Exception:
-            return "Alarms endpoint not available. This feature requires specific vSphere API permissions."
-        
-    except (ConnectionError, ValueError, KeyError) as e:
+        states = pv_client.content.rootFolder.triggeredAlarmState or []
+        if not states:
+            return "No active alarms found"
+
+        result = f"Active Alarms ({len(states)}):\n\n"
+        for state in states:
+            info = state.alarm.info
+            entity_name = getattr(state.entity, 'name', None) or state.entity._moId
+            entity_type = type(state.entity).__name__.split('.')[-1]
+            triggered = state.time.strftime('%Y-%m-%d %H:%M:%S UTC') if state.time else 'Unknown'
+            result += f"• {info.name}\n"
+            result += f"  Entity: {entity_name} ({entity_type})\n"
+            result += f"  Status: {state.overallStatus}\n"
+            result += f"  Triggered: {triggered}\n"
+            result += f"  Acknowledged: {bool(state.acknowledged)}\n"
+            description = (info.description or '').strip()
+            if description:
+                result += f"  Description: {description}\n"
+            result += "\n"
+
+        return result.strip()
+
+    except Exception as e:
         return _handle_error(e, "getting alarms")
     finally:
-        client.close()
+        pv_client.close()
 
 
 # Network Management Tools
