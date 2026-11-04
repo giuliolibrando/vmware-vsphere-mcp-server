@@ -1,6 +1,9 @@
 # requirements.txt
 mcp==1.14.1
+# mcp 1.14.1 依赖 pydantic._internal._typing_extra.eval_type_backport，
+# pydantic 2.14 移除了该符号，必须锁定在 2.13.x
+pydantic==2.13.4
 requests==2.32.5
 urllib3==2.5.0
 python-dotenv==1.0.0
-pyvmomi
+pyvmomi==8.0.1.0.1

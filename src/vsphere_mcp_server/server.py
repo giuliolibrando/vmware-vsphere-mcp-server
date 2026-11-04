@@ -5,13 +5,32 @@ import re
 from typing import Dict, List
 
 from mcp.server.fastmcp import FastMCP
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from .vsphere_client import VSphereClient
 from .pyvmomi_client import PyVmomiClient
+from .soap_client import SoapClient
 from pyVmomi import vim, vmodl
 
 # Initialize MCP server
 mcp = FastMCP("vSphere MCP Server")
+
+
+class BearerTokenAuthMiddleware(BaseHTTPMiddleware):
+    """Middleware that validates Bearer token on all requests."""
+
+    def __init__(self, app, token: str | None = None):
+        super().__init__(app)
+        self.token = token
+
+    async def dispatch(self, request: Request, call_next):
+        if self.token:
+            auth_header = request.headers.get("Authorization", "")
+            if not auth_header.startswith("Bearer ") or auth_header[7:] != self.token:
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+        return await call_next(request)
 
 
 def _handle_error(e: Exception, operation: str) -> str:
@@ -30,13 +49,13 @@ def _handle_error(e: Exception, operation: str) -> str:
 
 # VM Management Tools
 @mcp.tool()
-def list_vms(hostname: str = None) -> str:
+def list_vms(hostname: str | None = None) -> str:
     """List all virtual machines with basic information.
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -64,14 +83,14 @@ def list_vms(hostname: str = None) -> str:
 
 
 @mcp.tool()
-def get_vm_details(vm_id: str, hostname: str = None) -> str:
+def get_vm_details(vm_id: str, hostname: str | None = None) -> str:
     """Get detailed information about a specific virtual machine.
 
     Args:
         vm_id: Virtual machine ID or name
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -131,14 +150,14 @@ def get_vm_details(vm_id: str, hostname: str = None) -> str:
 
 
 @mcp.tool()
-def power_on_vm(vm_id: str, hostname: str = None) -> str:
+def power_on_vm(vm_id: str, hostname: str | None = None) -> str:
     """Power on a virtual machine.
 
     Args:
         vm_id: Virtual machine ID
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -154,14 +173,14 @@ def power_on_vm(vm_id: str, hostname: str = None) -> str:
 
 
 @mcp.tool()
-def power_off_vm(vm_id: str, hostname: str = None) -> str:
+def power_off_vm(vm_id: str, hostname: str | None = None) -> str:
     """Power off a virtual machine.
 
     Args:
         vm_id: Virtual machine ID
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -178,13 +197,13 @@ def power_off_vm(vm_id: str, hostname: str = None) -> str:
 
 # Infrastructure Tools
 @mcp.tool()
-def list_hosts(hostname: str = None) -> str:
+def list_hosts(hostname: str | None = None) -> str:
     """List all ESXi hosts.
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -211,14 +230,14 @@ def list_hosts(hostname: str = None) -> str:
 
 
 @mcp.tool()
-def get_host_details(hostname: str = None, host_id: str = None) -> str:
+def get_host_details(hostname: str | None = None, host_id: str = None) -> str:
     """Get detailed information about an ESXi host.
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
         host_id: ESXi host ID
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return 'Error: No hostname provided and VCENTER_HOST not set in environment'
@@ -244,13 +263,13 @@ def get_host_details(hostname: str = None, host_id: str = None) -> str:
 
 
 @mcp.tool()
-def list_datacenters(hostname: str = None) -> str:
+def list_datacenters(hostname: str | None = None) -> str:
     """List all datacenters.
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get("VCENTER_HOST")
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -275,14 +294,14 @@ def list_datacenters(hostname: str = None) -> str:
 
 
 @mcp.tool()
-def get_datacenter_details(hostname: str = None, datacenter_id: str = None) -> str:
+def get_datacenter_details(hostname: str | None = None, datacenter_id: str = None) -> str:
     """Get detailed information about a datacenter.
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
         datacenter_id: Datacenter ID
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get("VCENTER_HOST")
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -306,13 +325,13 @@ def get_datacenter_details(hostname: str = None, datacenter_id: str = None) -> s
 
 
 @mcp.tool()
-def list_datastores(hostname: str = None) -> str:
+def list_datastores(hostname: str | None = None) -> str:
     """List all datastores with capacity information.
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -346,14 +365,14 @@ def list_datastores(hostname: str = None) -> str:
 
 
 @mcp.tool()
-def get_datastore_details(hostname: str = None, datastore_id: str = None) -> str:
+def get_datastore_details(hostname: str | None = None, datastore_id: str = None) -> str:
     """Get detailed information about a datastore.
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
         datastore_id: Datastore ID
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get("VCENTER_HOST")
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -396,14 +415,14 @@ def get_datastore_details(hostname: str = None, datastore_id: str = None) -> str
 
 # Organization Tools
 @mcp.tool()
-def list_folders(hostname: str = None, folder_type: str = "VIRTUAL_MACHINE") -> str:
+def list_folders(hostname: str | None = None, folder_type: str = "VIRTUAL_MACHINE") -> str:
     """List folders by type.
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
         folder_type: Folder type (VIRTUAL_MACHINE, HOST, DATACENTER, DATASTORE, NETWORK)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get("VCENTER_HOST")
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -430,14 +449,14 @@ def list_folders(hostname: str = None, folder_type: str = "VIRTUAL_MACHINE") -> 
 
 
 @mcp.tool()
-def get_folder_details(hostname: str = None, folder_id: str = None) -> str:
+def get_folder_details(hostname: str | None = None, folder_id: str = None) -> str:
     """Get detailed information about a folder.
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
         folder_id: Folder ID
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get("VCENTER_HOST")
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -466,13 +485,13 @@ def get_folder_details(hostname: str = None, folder_id: str = None) -> str:
 
 # Network Tools
 @mcp.tool()
-def list_networks(hostname: str = None) -> str:
+def list_networks(hostname: str | None = None) -> str:
     """List all networks with VLAN information.
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -507,14 +526,14 @@ def list_networks(hostname: str = None) -> str:
 
 
 @mcp.tool()
-def get_network_details(hostname: str = None, network_id: str = None) -> str:
+def get_network_details(hostname: str | None = None, network_id: str = None) -> str:
     """Get detailed information about a network.
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
         network_id: Network ID
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get("VCENTER_HOST")
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -552,14 +571,14 @@ def get_network_details(hostname: str = None, network_id: str = None) -> str:
 
 
 @mcp.tool()
-def get_vlan_info(hostname: str = None, vlan_query: str = "") -> str:
+def get_vlan_info(hostname: str | None = None, vlan_query: str = "") -> str:
     """Get information about a VLAN by name or VLAN ID.
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
         vlan_query: VLAN name (e.g., v1306-MEL03-Secure-Management) or VLAN ID (e.g., 1306)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get("VCENTER_HOST")
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -619,13 +638,13 @@ def get_vlan_info(hostname: str = None, vlan_query: str = "") -> str:
 
 
 @mcp.tool()
-def list_vlans(hostname: str = None) -> str:
+def list_vlans(hostname: str | None = None) -> str:
     """Extract and list VLAN information from network names.
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get("VCENTER_HOST")
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -666,13 +685,13 @@ def list_vlans(hostname: str = None) -> str:
 
 
 @mcp.tool()
-def get_vm_disk_usage(hostname: str = None) -> str:
+def get_vm_disk_usage(hostname: str | None = None) -> str:
     """Get disk usage information for all VMs.
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -728,13 +747,13 @@ def get_vm_disk_usage(hostname: str = None) -> str:
 
 
 @mcp.tool()
-def get_vm_storage_info(hostname: str = None) -> str:
+def get_vm_storage_info(hostname: str | None = None) -> str:
     """Get detailed storage information for all VMs including datastore usage.
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -798,13 +817,13 @@ def get_vm_storage_info(hostname: str = None) -> str:
 
 
 @mcp.tool()
-def get_datastore_usage(hostname: str = None) -> str:
+def get_datastore_usage(hostname: str | None = None) -> str:
     """Get datastore usage information to identify potential storage issues.
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -858,13 +877,13 @@ def get_datastore_usage(hostname: str = None) -> str:
 
 
 @mcp.tool()
-def get_vm_performance_info(hostname: str = None) -> str:
+def get_vm_performance_info(hostname: str | None = None) -> str:
     """Get performance information for all VMs including CPU, RAM, and network.
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -944,13 +963,13 @@ def get_vm_performance_info(hostname: str = None) -> str:
 
 
 @mcp.tool()
-def get_host_performance_info(hostname: str = None) -> str:
+def get_host_performance_info(hostname: str | None = None) -> str:
     """Get performance information for all ESXi hosts.
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -1025,13 +1044,13 @@ def get_host_performance_info(hostname: str = None) -> str:
 
 
 @mcp.tool()
-def get_vms_with_high_resource_usage(hostname: str = None) -> str:
+def get_vms_with_high_resource_usage(hostname: str | None = None) -> str:
     """Get VMs that might have high resource usage based on configuration.
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -1103,60 +1122,50 @@ def get_vms_with_high_resource_usage(hostname: str = None) -> str:
         client.close()
 
 
-# Snapshot Management Tools
+# Snapshot Management Tools (using SOAP API - vSphere 8 removed REST snapshot endpoints)
 @mcp.tool()
-def list_vm_snapshots(vm_id: str, hostname: str = None) -> str:
+def list_vm_snapshots(vm_id: str, hostname: str | None = None) -> str:
     """List all snapshots for a specific VM.
 
     Args:
         vm_id: Virtual machine ID or name
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
-    
-    client = VSphereClient(hostname)
+
+    soap = SoapClient(hostname)
     try:
-        # If vm_id doesn't start with 'vm-', assume it's a name and look up the ID
-        if not vm_id.startswith("vm-"):
-            vms_response = client.get("vcenter/vm")
-            vms = vms_response.get("value", [])
-            
-            vm_id_found = None
-            for vm in vms:
-                if vm.get("name", "").lower() == vm_id.lower():
-                    vm_id_found = vm.get("vm")
-                    break
-            
-            if not vm_id_found:
-                return f"Virtual machine '{vm_id}' not found by name"
-            vm_id = vm_id_found
-        
-        # Get VM snapshots
-        response = client.get(f"vcenter/vm/{vm_id}/snapshot")
-        snapshots = response.get("value", [])
-        
-        if not snapshots:
-            return f"No snapshots found for VM {vm_id}"
-        
-        result = f"Snapshots for VM {vm_id}:\n\n"
-        for snapshot in snapshots:
-            result += f"• {snapshot.get('name', 'Unknown')} (ID: {snapshot.get('snapshot')})\n"
-            result += f"  Created: {snapshot.get('create_time', 'Unknown')}\n"
-            result += f"  State: {snapshot.get('state', 'Unknown')}\n\n"
-        
-        return result.strip()
-        
-    except (ConnectionError, ValueError, KeyError) as e:
+        vm, result = soap.list_snapshots(vm_id)
+        if vm is None:
+            return result  # error message
+
+        vm_name = vm.name
+        if not result:
+            return f"No snapshots found for VM {vm_name}"
+
+        output = f"Snapshots for VM {vm_name}:\n\n"
+        for snap in result:
+            output += f"  * {snap['name']} (ID: {snap['id']})\n"
+            output += f"    Created: {snap['create_time']}\n"
+            output += f"    State: {snap['state']}\n"
+            if snap['description']:
+                output += f"    Description: {snap['description']}\n"
+            if snap['is_current']:
+                output += f"    Current: Yes\n"
+            output += "\n"
+
+        return output.strip()
+
+    except Exception as e:
         return _handle_error(e, f"listing snapshots for VM {vm_id}")
     finally:
-        client.close()
-
+        soap.disconnect()
 
 @mcp.tool()
-def create_vm_snapshot(vm_id: str, snapshot_name: str, description: str = "", hostname: str = None) -> str:
+def create_vm_snapshot(vm_id: str, snapshot_name: str, description: str = "", hostname: str | None = None) -> str:
     """Create a snapshot for a specific VM.
 
     Args:
@@ -1165,54 +1174,29 @@ def create_vm_snapshot(vm_id: str, snapshot_name: str, description: str = "", ho
         description: Description for the snapshot (optional)
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
-    
-    client = VSphereClient(hostname)
+
+    soap = SoapClient(hostname)
     try:
-        # If vm_id doesn't start with 'vm-', assume it's a name and look up the ID
-        if not vm_id.startswith("vm-"):
-            vms_response = client.get("vcenter/vm")
-            vms = vms_response.get("value", [])
-            
-            vm_id_found = None
-            for vm in vms:
-                if vm.get("name", "").lower() == vm_id.lower():
-                    vm_id_found = vm.get("vm")
-                    break
-            
-            if not vm_id_found:
-                return f"Virtual machine '{vm_id}' not found by name"
-            vm_id = vm_id_found
-        
-        # Create snapshot
-        snapshot_data = {
-            "name": snapshot_name,
-            "description": description,
-            "memory": True,
-            "quiesce": True
-        }
-        
-        client.post(f"vcenter/vm/{vm_id}/snapshot", snapshot_data)
-        return f"Snapshot '{snapshot_name}' created successfully for VM {vm_id}"
-        
-    except (ConnectionError, ValueError, KeyError) as e:
+        return soap.create_snapshot(vm_id, snapshot_name, description)
+    except Exception as e:
         return _handle_error(e, f"creating snapshot for VM {vm_id}")
     finally:
-        client.close()
+        soap.disconnect()
 
 
 # Template Management Tools
 @mcp.tool()
-def list_templates(hostname: str = None) -> str:
+def list_templates(hostname: str | None = None) -> str:
     """List all VM templates.
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -1249,14 +1233,14 @@ def list_templates(hostname: str = None) -> str:
 
 # Advanced Monitoring Tools
 @mcp.tool()
-def get_vm_events(vm_id: str, hostname: str = None) -> str:
+def get_vm_events(vm_id: str, hostname: str | None = None) -> str:
     """Get recent events for a specific VM.
 
     Args:
         vm_id: Virtual machine ID or name
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -1304,13 +1288,13 @@ def get_vm_events(vm_id: str, hostname: str = None) -> str:
 
 
 @mcp.tool()
-def get_alarms(hostname: str = None) -> str:
+def get_alarms(hostname: str | None = None) -> str:
     """Get active alarms in the vSphere environment.
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -1345,13 +1329,13 @@ def get_alarms(hostname: str = None) -> str:
 
 # Network Management Tools
 @mcp.tool()
-def get_port_groups(hostname: str = None) -> str:
+def get_port_groups(hostname: str | None = None) -> str:
     """Get all port groups in the vSphere environment.
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -1381,13 +1365,13 @@ def get_port_groups(hostname: str = None) -> str:
 
 # Reporting and Analytics Tools
 @mcp.tool()
-def generate_vm_report(hostname: str = None) -> str:
+def generate_vm_report(hostname: str | None = None) -> str:
     """Generate a comprehensive report of all VMs.
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -1448,13 +1432,13 @@ def generate_vm_report(hostname: str = None) -> str:
 
 
 @mcp.tool()
-def get_resource_utilization_summary(hostname: str = None) -> str:
+def get_resource_utilization_summary(hostname: str | None = None) -> str:
     """Get a summary of resource utilization across the vSphere environment.
 
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -1569,7 +1553,7 @@ def get_resource_utilization_summary(hostname: str = None) -> str:
 
 # Automation Tools
 @mcp.tool()
-def bulk_power_operations(operation: str, vm_list: str, hostname: str = None) -> str:
+def bulk_power_operations(operation: str, vm_list: str, hostname: str | None = None) -> str:
     """Perform bulk power operations on multiple VMs.
 
     Args:
@@ -1577,7 +1561,7 @@ def bulk_power_operations(operation: str, vm_list: str, hostname: str = None) ->
         vm_list: Comma-separated list of VM names or IDs
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -1632,52 +1616,61 @@ def bulk_power_operations(operation: str, vm_list: str, hostname: str = None) ->
 
 # Destructive Operations with Confirmation
 @mcp.tool()
-def delete_vm_snapshot(vm_id: str, snapshot_id: str, confirm: bool = False, hostname: str = None) -> str:
-    """Delete a snapshot for a specific VM. REQUIRES CONFIRMATION.
+def delete_vm_snapshot(vm_id: str, snapshot_name: str, confirm: bool = False, hostname: str | None = None) -> str:
+    """Delete a snapshot for a specific VM by snapshot name. REQUIRES CONFIRMATION.
 
     Args:
         vm_id: Virtual machine ID or name
-        snapshot_id: Snapshot ID to delete
+        snapshot_name: Name of the snapshot to delete
         confirm: Must be True to proceed with deletion
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
     """
     if not confirm:
-        return f"⚠️  DESTRUCTIVE OPERATION: Delete snapshot {snapshot_id} for VM {vm_id}\n\nThis operation cannot be undone!\n\nTo proceed, call this function again with confirm=True"
-    
-    if hostname is None:
+        return f"DESTRUCTIVE OPERATION: Delete snapshot '{snapshot_name}' for VM {vm_id}. This cannot be undone. Call again with confirm=True to proceed."
+
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
-    
-    client = VSphereClient(hostname)
+
+    soap = SoapClient(hostname)
     try:
-        # If vm_id doesn't start with 'vm-', assume it's a name and look up the ID
-        if not vm_id.startswith("vm-"):
-            vms_response = client.get("vcenter/vm")
-            vms = vms_response.get("value", [])
-            
-            vm_id_found = None
-            for vm in vms:
-                if vm.get("name", "").lower() == vm_id.lower():
-                    vm_id_found = vm.get("vm")
-                    break
-            
-            if not vm_id_found:
-                return f"Virtual machine '{vm_id}' not found by name"
-            vm_id = vm_id_found
-        
-        # Delete snapshot
-        client.delete(f"vcenter/vm/{vm_id}/snapshot/{snapshot_id}")
-        return f"✅ Snapshot {snapshot_id} deleted successfully for VM {vm_id}"
-        
-    except (ConnectionError, ValueError, KeyError) as e:
-        return _handle_error(e, f"deleting snapshot {snapshot_id} for VM {vm_id}")
+        return soap.delete_snapshot_by_name(vm_id, snapshot_name)
+    except Exception as e:
+        return _handle_error(e, f"deleting snapshot '{snapshot_name}' for VM {vm_id}")
     finally:
-        client.close()
+        soap.disconnect()
 
 
 @mcp.tool()
-def delete_vm(vm_id: str, confirm: bool = False, hostname: str = None) -> str:
+def revert_vm_snapshot(vm_id: str, snapshot_name: str, confirm: bool = False, hostname: str | None = None) -> str:
+    """Revert a VM to a named snapshot. REQUIRES CONFIRMATION.
+
+    Args:
+        vm_id: Virtual machine ID or name
+        snapshot_name: Name of the snapshot to revert to
+        confirm: Must be True to proceed (reverting discards current disk state)
+        hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
+    """
+    if not confirm:
+        return f"⚠️  DESTRUCTIVE OPERATION: Revert VM {vm_id} to snapshot '{snapshot_name}'\n\nCurrent disk state will be discarded. This cannot be undone!\n\nTo proceed, call this function again with confirm=True"
+
+    if not hostname:
+        hostname = os.environ.get('VCENTER_HOST')
+        if not hostname:
+            return "Error: No hostname provided and VCENTER_HOST not set in environment"
+
+    soap = SoapClient(hostname)
+    try:
+        return soap.revert_to_snapshot(vm_id, snapshot_name)
+    except Exception as e:
+        return _handle_error(e, f"reverting VM {vm_id} to snapshot '{snapshot_name}'")
+    finally:
+        soap.disconnect()
+
+
+@mcp.tool()
+def delete_vm(vm_id: str, confirm: bool = False, hostname: str | None = None) -> str:
     """Delete a virtual machine. REQUIRES CONFIRMATION.
 
     Args:
@@ -1688,7 +1681,7 @@ def delete_vm(vm_id: str, confirm: bool = False, hostname: str = None) -> str:
     if not confirm:
         return f"⚠️  DESTRUCTIVE OPERATION: Delete VM {vm_id}\n\nThis operation will permanently delete the virtual machine and all its data!\nThis operation cannot be undone!\n\nTo proceed, call this function again with confirm=True"
     
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -1721,7 +1714,7 @@ def delete_vm(vm_id: str, confirm: bool = False, hostname: str = None) -> str:
 
 
 @mcp.tool()
-def modify_vm_resources(vm_id: str, cpu_count: int = None, memory_gb: int = None, confirm: bool = False, hostname: str = None) -> str:
+def modify_vm_resources(vm_id: str, cpu_count: int = None, memory_gb: int = None, confirm: bool = False, hostname: str | None = None) -> str:
     """Modify VM resources (CPU and/or Memory). REQUIRES CONFIRMATION.
 
     Args:
@@ -1740,7 +1733,7 @@ def modify_vm_resources(vm_id: str, cpu_count: int = None, memory_gb: int = None
         
         return f"⚠️  DESTRUCTIVE OPERATION: Modify VM {vm_id}\n\nProposed changes:\n" + "\n".join(f"  - {change}" for change in changes) + "\n\nThis operation will modify the VM configuration!\n\nTo proceed, call this function again with confirm=True"
     
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -1792,7 +1785,7 @@ def modify_vm_resources(vm_id: str, cpu_count: int = None, memory_gb: int = None
 
 
 @mcp.tool()
-def bulk_delete_vms(vm_list: str, confirm: bool = False, hostname: str = None) -> str:
+def bulk_delete_vms(vm_list: str, confirm: bool = False, hostname: str | None = None) -> str:
     """Delete multiple VMs. REQUIRES CONFIRMATION.
 
     Args:
@@ -1804,7 +1797,7 @@ def bulk_delete_vms(vm_list: str, confirm: bool = False, hostname: str = None) -
         vm_names = [name.strip() for name in vm_list.split(',')]
         return f"⚠️  DESTRUCTIVE OPERATION: Delete Multiple VMs\n\nVMs to be deleted:\n" + "\n".join(f"  - {name}" for name in vm_names) + "\n\nThis operation will permanently delete all specified VMs and all their data!\nThis operation cannot be undone!\n\nTo proceed, call this function again with confirm=True"
     
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -1848,7 +1841,7 @@ def bulk_delete_vms(vm_list: str, confirm: bool = False, hostname: str = None) -
 
 
 @mcp.tool()
-def force_power_off_vm(vm_id: str, confirm: bool = False, hostname: str = None) -> str:
+def force_power_off_vm(vm_id: str, confirm: bool = False, hostname: str | None = None) -> str:
     """Force power off a virtual machine (equivalent to pulling the power cord). REQUIRES CONFIRMATION.
 
     Args:
@@ -1859,7 +1852,7 @@ def force_power_off_vm(vm_id: str, confirm: bool = False, hostname: str = None) 
     if not confirm:
         return f"⚠️  DESTRUCTIVE OPERATION: Force Power Off VM {vm_id}\n\nThis operation will immediately power off the VM without graceful shutdown!\nThis is equivalent to pulling the power cord and may cause data loss!\n\nTo proceed, call this function again with confirm=True"
     
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -1895,7 +1888,7 @@ def force_power_off_vm(vm_id: str, confirm: bool = False, hostname: str = None) 
 
 
 @mcp.tool()
-def list_datacenters_pyvmomi(hostname: str = None) -> str:
+def list_datacenters_pyvmomi(hostname: str | None = None) -> str:
     """List all datacenters using pyVmomi (direct SOAP connection).
 
     Args:
@@ -1918,7 +1911,7 @@ def list_datacenters_pyvmomi(hostname: str = None) -> str:
 
 
 @mcp.tool()
-def list_clusters_pyvmomi(datacenter: str = None, hostname: str = None) -> str:
+def list_clusters_pyvmomi(datacenter: str = None, hostname: str | None = None) -> str:
     """List all clusters in a datacenter using pyVmomi.
 
     Args:
@@ -1954,7 +1947,7 @@ def list_clusters_pyvmomi(datacenter: str = None, hostname: str = None) -> str:
 
 
 @mcp.tool()
-def find_template_pyvmomi(name: str, datacenter: str = None, hostname: str = None) -> str:
+def find_template_pyvmomi(name: str, datacenter: str = None, hostname: str | None = None) -> str:
     """Find a VM template by name using pyVmomi PropertyCollector.
 
     Args:
@@ -2023,7 +2016,7 @@ def clone_vm(
     target_datacenter: str = "",
     network_name: str = "",
     confirm: bool = False,
-    hostname: str = None,
+    hostname: str | None = None,
 ) -> str:
     """Clone a VM from a template using pyVmomi.
 
@@ -2199,7 +2192,7 @@ def clone_vm(
 
 
 @mcp.tool()
-def get_vm_networks_pyvmomi(vm_name: str, hostname: str = None) -> str:
+def get_vm_networks_pyvmomi(vm_name: str, hostname: str | None = None) -> str:
     """Get network adapter details of a VM using pyVmomi.
 
     Args:
@@ -2240,19 +2233,31 @@ def get_vm_networks_pyvmomi(vm_name: str, hostname: str = None) -> str:
 def main() -> None:
     """Main entry point for the MCP server."""
     import os
+    import uvicorn
     from dotenv import load_dotenv
-    
+
     # Load environment variables
     load_dotenv()
-    
+
     # Configure FastMCP settings for streamable HTTP transport
     mcp.settings.host = os.getenv("SERVER_HOST", "0.0.0.0")
     mcp.settings.port = int(os.getenv("SERVER_PORT", "8000"))
-    mcp.settings.stateless_http = False
-    mcp.settings.json_response = True  # Return JSON instead of SSE for simpler parsing
-    
-    # Run with streamable HTTP transport
-    mcp.run(transport="streamable-http")
+    mcp.settings.stateless_http = True  # Enable stateless mode
+
+    # Build the app first, then optionally add auth middleware
+    starlette_app = mcp.streamable_http_app()
+    auth_token = os.getenv("MCP_AUTH_TOKEN")
+    if auth_token:
+        starlette_app.add_middleware(BearerTokenAuthMiddleware, token=auth_token)
+
+    # Run with uvicorn directly (not mcp.run, which would create a new app)
+    config = uvicorn.Config(
+        starlette_app,
+        host=mcp.settings.host,
+        port=mcp.settings.port,
+    )
+    server = uvicorn.Server(config)
+    server.run()
 
 
 # Export the Starlette/FastAPI app for testing and external use
