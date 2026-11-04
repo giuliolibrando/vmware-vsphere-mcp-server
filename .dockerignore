@@ -1,0 +1,23 @@
+# 构建上下文排除项
+# 绝不能把 .env（含 vCenter 凭据与 MCP_AUTH_TOKEN）打进镜像层
+.env
+.env.*
+!.env.example
+
+# Git 元数据与本地备份
+.git/
+.gitignore
+.github/
+
+# 本地备份与缓存
+*.bak
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 编辑器与文档
+.vscode/
+.idea/
+.DS_Store
+AGENTS.md

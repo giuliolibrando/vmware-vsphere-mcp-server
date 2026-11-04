@@ -31,6 +31,21 @@ def _mutating(destructive: bool, idempotent: bool) -> ToolAnnotations:
                            idempotentHint=idempotent, openWorldHint=False)
 
 
+class BearerTokenAuthMiddleware(BaseHTTPMiddleware):
+    """Middleware that validates Bearer token on all requests."""
+
+    def __init__(self, app, token: str | None = None):
+        super().__init__(app)
+        self.token = token
+
+    async def dispatch(self, request: Request, call_next):
+        if self.token:
+            auth_header = request.headers.get("Authorization", "")
+            if not auth_header.startswith("Bearer ") or auth_header[7:] != self.token:
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+        return await call_next(request)
+
+
 def _handle_error(e: Exception, operation: str) -> str:
     """Handle errors consistently across all tools."""
     error_msg = str(e)
@@ -122,7 +137,7 @@ def list_vms(
         sort_by: order rows by this field before applying limit
         descending: sort direction (default True = biggest/latest first)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -174,7 +189,7 @@ def get_vm_details(vm_id: str, hostname: Optional[str] = None) -> str:
         vm_id: Virtual machine ID or name
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -241,7 +256,7 @@ def power_on_vm(vm_id: str, hostname: Optional[str] = None) -> str:
         vm_id: Virtual machine ID
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -264,7 +279,7 @@ def power_off_vm(vm_id: str, hostname: Optional[str] = None) -> str:
         vm_id: Virtual machine ID
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -325,7 +340,7 @@ def list_hosts(
         sort_by: order rows by this field before applying limit
         descending: sort direction (default True = biggest first)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -381,7 +396,7 @@ def get_host_details(hostname: Optional[str] = None, host_id: Optional[str] = No
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
         host_id: ESXi host ID (host-###) or name
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return 'Error: No hostname provided and VCENTER_HOST not set in environment'
@@ -427,7 +442,7 @@ def list_datacenters(hostname: Optional[str] = None) -> str:
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get("VCENTER_HOST")
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -459,7 +474,7 @@ def get_datacenter_details(hostname: Optional[str] = None, datacenter_id: Option
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
         datacenter_id: Datacenter ID
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get("VCENTER_HOST")
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -518,7 +533,7 @@ def list_datastores(
         sort_by: order rows by this field before applying limit
         descending: sort direction (default True = biggest first)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -576,7 +591,7 @@ def get_datastore_details(hostname: Optional[str] = None, datastore_id: Optional
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
         datastore_id: Datastore ID
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get("VCENTER_HOST")
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -629,7 +644,7 @@ def list_folders(hostname: Optional[str] = None, folder_type: str = "VIRTUAL_MAC
         name_contains: only folders whose name contains this (case-insensitive)
         limit: max folders shown (default 50; 0 = unlimited)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get("VCENTER_HOST")
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -671,7 +686,7 @@ def get_folder_details(hostname: Optional[str] = None, folder_id: Optional[str] 
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
         folder_id: Folder ID
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get("VCENTER_HOST")
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -736,7 +751,7 @@ def list_networks(
         sort_by: order rows by this field before applying limit
         descending: sort direction (default True = biggest first)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -795,7 +810,7 @@ def get_network_details(hostname: Optional[str] = None, network_id: Optional[str
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
         network_id: Network ID
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get("VCENTER_HOST")
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -840,7 +855,7 @@ def get_vlan_info(hostname: Optional[str] = None, vlan_query: str = "") -> str:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
         vlan_query: VLAN name (e.g., v1306-MEL03-Secure-Management) or VLAN ID (e.g., 1306)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get("VCENTER_HOST")
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -906,7 +921,7 @@ def list_vlans(hostname: Optional[str] = None) -> str:
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get("VCENTER_HOST")
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -960,7 +975,7 @@ def get_vm_disk_usage(hostname: Optional[str] = None, limit: int = 15) -> str:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
         limit: number of VMs shown (default 15; 0 = all)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -995,7 +1010,7 @@ def get_vm_storage_info(hostname: Optional[str] = None, vm_id: Optional[str] = N
         vm_id: Virtual machine ID or name (optional)
         limit: number of VMs shown in the overview (default 15; 0 = all)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -1070,7 +1085,7 @@ def get_datastore_usage(hostname: Optional[str] = None) -> str:
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -1136,7 +1151,7 @@ def get_vm_performance_info(hostname: Optional[str] = None, limit: int = 15) -> 
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
         limit: number of VMs shown (default 15; 0 = all)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -1169,7 +1184,7 @@ def get_host_performance_info(hostname: Optional[str] = None, limit: int = 25) -
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
         limit: number of hosts shown (default 25; 0 = all)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -1205,7 +1220,7 @@ def get_vms_with_high_resource_usage(hostname: Optional[str] = None,
         memory_gb_threshold: minimum memory in GB to report (default 16)
         limit: max VMs per section (default 15; 0 = all)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -1288,7 +1303,7 @@ def list_vm_snapshots(
         sort_by: order rows by this field before applying limit (fleet mode)
         descending: sort direction (default True = biggest/oldest first)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -1347,7 +1362,7 @@ def create_vm_snapshot(vm_id: str, snapshot_name: str, description: str = "",
             running tools; ignored for powered-off VMs)
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -1385,7 +1400,7 @@ def list_templates(hostname: Optional[str] = None) -> str:
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -1429,7 +1444,7 @@ def get_vm_events(vm_id: str, hostname: Optional[str] = None) -> str:
         vm_id: Virtual machine ID or name
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -1483,7 +1498,7 @@ def get_alarms(hostname: Optional[str] = None) -> str:
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -1528,7 +1543,7 @@ def get_port_groups(hostname: Optional[str] = None, limit: int = 50) -> str:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
         limit: max port groups shown (default 50; 0 = unlimited)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -1572,7 +1587,7 @@ def generate_vm_report(hostname: Optional[str] = None) -> str:
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -1645,7 +1660,7 @@ def get_resource_utilization_summary(hostname: Optional[str] = None) -> str:
     Args:
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -1715,7 +1730,7 @@ def bulk_power_operations(operation: str, vm_list: str, hostname: Optional[str] 
         vm_list: Comma-separated list of VM names or IDs
         hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
     """
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -1832,7 +1847,7 @@ def delete_vm(vm_id: str, confirm: bool = False, hostname: Optional[str] = None)
     if not confirm:
         return f"⚠️  DESTRUCTIVE OPERATION: Delete VM {vm_id}\n\nThis operation will permanently delete the virtual machine and all its data!\nThis operation cannot be undone!\n\nTo proceed, call this function again with confirm=True"
     
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -1884,7 +1899,7 @@ def modify_vm_resources(vm_id: str, cpu_count: Optional[int] = None, memory_gb: 
         
         return f"⚠️  DESTRUCTIVE OPERATION: Modify VM {vm_id}\n\nProposed changes:\n" + "\n".join(f"  - {change}" for change in changes) + "\n\nThis operation will modify the VM configuration!\n\nTo proceed, call this function again with confirm=True"
     
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -1948,7 +1963,7 @@ def bulk_delete_vms(vm_list: str, confirm: bool = False, hostname: Optional[str]
         vm_names = [name.strip() for name in vm_list.split(',')]
         return f"⚠️  DESTRUCTIVE OPERATION: Delete Multiple VMs\n\nVMs to be deleted:\n" + "\n".join(f"  - {name}" for name in vm_names) + "\n\nThis operation will permanently delete all specified VMs and all their data!\nThis operation cannot be undone!\n\nTo proceed, call this function again with confirm=True"
     
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -2003,7 +2018,7 @@ def force_power_off_vm(vm_id: str, confirm: bool = False, hostname: Optional[str
     if not confirm:
         return f"⚠️  DESTRUCTIVE OPERATION: Force Power Off VM {vm_id}\n\nThis operation will immediately power off the VM without graceful shutdown!\nThis is equivalent to pulling the power cord and may cause data loss!\n\nTo proceed, call this function again with confirm=True"
     
-    if hostname is None:
+    if not hostname:
         hostname = os.environ.get('VCENTER_HOST')
         if not hostname:
             return "Error: No hostname provided and VCENTER_HOST not set in environment"
@@ -2433,17 +2448,49 @@ def get_vm_networks_pyvmomi(vm_name: str, hostname: Optional[str] = None) -> str
 def main() -> None:
     """Main entry point for the MCP server."""
     import os
+    import sys
     from dotenv import load_dotenv
-    
+
     # Load environment variables
     load_dotenv()
-    
+
+    raw_transport = os.environ.get("MCP_TRANSPORT", "streamable-http")
+    transport = raw_transport.strip().lower()
+    if transport not in ("stdio", "streamable-http"):
+        # Fail loudly rather than silently starting the HTTP server: a
+        # typo like "STDIO " or "streamable_http" would otherwise leave a
+        # stdio client hanging against an HTTP listener.
+        print(
+            f"Error: unsupported MCP_TRANSPORT value {raw_transport!r}. "
+            "Valid values: 'stdio', 'streamable-http' (default).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if transport == "stdio":
+        # stdio has no safe interactive fallback: credentials.py's
+        # _prompt_for_credentials() would read/write over the same
+        # stdin/stdout used for JSON-RPC and corrupt the protocol stream.
+        required_vars = ["VCENTER_HOST", "VCENTER_USER", "VCENTER_PASSWORD"]
+        missing = [name for name in required_vars if not os.environ.get(name)]
+        if missing:
+            print(
+                "Error: missing required environment variable(s) for stdio "
+                f"transport: {', '.join(missing)}. Set them in the MCP "
+                "client's server config — stdio cannot prompt interactively.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        mcp.run(transport="stdio")
+        return
+
     # Configure FastMCP settings for streamable HTTP transport
     mcp.settings.host = os.getenv("SERVER_HOST", "0.0.0.0")
     mcp.settings.port = int(os.getenv("SERVER_PORT", "8000"))
     mcp.settings.stateless_http = False
     mcp.settings.json_response = True  # Return JSON instead of SSE for simpler parsing
-    
+
     # Run with streamable HTTP transport
     mcp.run(transport="streamable-http")
 
