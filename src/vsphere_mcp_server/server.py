@@ -8,9 +8,13 @@ from typing import Dict, List, Optional
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from .vsphere_client import VSphereClient
 from .pyvmomi_client import PyVmomiClient
+from .soap_client import SoapClient
 from .inventory import (FilterCondition, aggregate, fetch_inventory,
                         find_object, flatten_snapshot_tree, match_snapshot,
                         run_inventory_query, sort_rows)
@@ -1785,6 +1789,33 @@ def bulk_power_operations(operation: str, vm_list: str, hostname: Optional[str] 
 
 # Destructive Operations with Confirmation
 @mcp.tool(annotations=_mutating(destructive=True, idempotent=True))
+def revert_vm_snapshot(vm_id: str, snapshot_name: str, confirm: bool = False, hostname: Optional[str] = None) -> str:
+    """Revert a VM to a named snapshot. REQUIRES CONFIRMATION.
+
+    Args:
+        vm_id: Virtual machine ID or name
+        snapshot_name: Name of the snapshot to revert to
+        confirm: Must be True to proceed (reverting discards current disk state)
+        hostname: vSphere hostname (optional, uses VCENTER_HOST from environment if not provided)
+    """
+    if not confirm:
+        return f"⚠️  DESTRUCTIVE OPERATION: Revert VM {vm_id} to snapshot '{snapshot_name}'\n\nCurrent disk state will be discarded. This cannot be undone!\n\nTo proceed, call this function again with confirm=True"
+
+    if hostname is None:
+        hostname = os.environ.get('VCENTER_HOST')
+        if not hostname:
+            return "Error: No hostname provided and VCENTER_HOST not set in environment"
+
+    soap = SoapClient(hostname)
+    try:
+        return soap.revert_to_snapshot(vm_id, snapshot_name)
+    except Exception as e:
+        return _handle_error(e, f"reverting VM {vm_id} to snapshot '{snapshot_name}'")
+    finally:
+        soap.disconnect()
+
+
+@mcp.tool(annotations=_mutating(destructive=True, idempotent=True))
 def delete_vm_snapshot(vm_id: str, snapshot_id: str, confirm: bool = False, hostname: Optional[str] = None) -> str:
     """Delete a snapshot for a specific VM. REQUIRES CONFIRMATION.
 
@@ -2449,6 +2480,7 @@ def main() -> None:
     """Main entry point for the MCP server."""
     import os
     import sys
+    import uvicorn
     from dotenv import load_dotenv
 
     # Load environment variables
@@ -2491,8 +2523,20 @@ def main() -> None:
     mcp.settings.stateless_http = False
     mcp.settings.json_response = True  # Return JSON instead of SSE for simpler parsing
 
-    # Run with streamable HTTP transport
-    mcp.run(transport="streamable-http")
+    # Build the app first, then optionally add auth middleware
+    starlette_app = mcp.streamable_http_app()
+    auth_token = os.getenv("MCP_AUTH_TOKEN")
+    if auth_token:
+        starlette_app.add_middleware(BearerTokenAuthMiddleware, token=auth_token)
+
+    # Run with uvicorn directly (not mcp.run, which would create a new app)
+    config = uvicorn.Config(
+        starlette_app,
+        host=mcp.settings.host,
+        port=mcp.settings.port,
+    )
+    server = uvicorn.Server(config)
+    server.run()
 
 
 # Export the Starlette/FastAPI app for testing and external use

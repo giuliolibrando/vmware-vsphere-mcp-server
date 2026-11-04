@@ -11,6 +11,7 @@ MUTATING = {
     "bulk_power_operations": (True, False),   # includes 'restart'
     "create_vm_snapshot": (False, False),     # each call adds a snapshot
     "delete_vm_snapshot": (True, True),
+    "revert_vm_snapshot": (True, True),
     "delete_vm": (True, True),
     "modify_vm_resources": (True, True),
     "bulk_delete_vms": (True, True),
