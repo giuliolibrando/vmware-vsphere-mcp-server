@@ -29,6 +29,7 @@ A comprehensive Model Context Protocol (MCP) server for VMware vSphere managemen
 ### Safety Features
 - **Confirmation System** - All destructive operations require explicit confirmation
 - **Optional Bearer Token Auth** - Restrict access to `/mcp` with `MCP_AUTH_TOKEN`
+- **Tool Allow-Listing** - Hide any tool from clients with `DISABLED_TOOLS` (e.g. read-only deployments)
 - **Error Handling** - Comprehensive error messages and troubleshooting
 - **Secure Authentication** - Environment-based credential management
 - **Audit Trail** - Clear logging of all operations
@@ -74,6 +75,9 @@ SERVER_PORT=8000
 
 # MCP Server Authentication (optional, leave empty to disable auth)
 MCP_AUTH_TOKEN=
+
+# Tools to hide from clients (optional, comma-separated tool names)
+DISABLED_TOOLS=
 ```
 
 > `.env` is excluded from both git (`.gitignore`) and the image build (`.dockerignore`).
@@ -309,6 +313,22 @@ curl -X POST http://127.0.0.1:8000/mcp \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"probe","version":"1"}}}'
+```
+
+### Disabling Tools
+List tool names in `DISABLED_TOOLS` (comma-separated) to keep them from being
+registered at all: clients never see them in the tool list and cannot call
+them. Unknown names are reported on stderr at startup, so a typo does not
+silently leave a tool enabled.
+
+Read-only deployment (every tool that changes vSphere state):
+```env
+DISABLED_TOOLS=power_on_vm,power_off_vm,force_power_off_vm,bulk_power_operations,create_vm_snapshot,delete_vm_snapshot,revert_vm_snapshot,delete_vm,bulk_delete_vms,modify_vm_resources,clone_vm
+```
+
+Only block the destructive ones:
+```env
+DISABLED_TOOLS=delete_vm,bulk_delete_vms,delete_vm_snapshot,revert_vm_snapshot,force_power_off_vm,modify_vm_resources,bulk_power_operations
 ```
 
 ### Environment-Based Authentication

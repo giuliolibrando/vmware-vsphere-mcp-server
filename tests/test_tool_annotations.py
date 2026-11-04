@@ -54,3 +54,19 @@ def test_mutating_tools_declare_destructive_and_idempotent_hints():
         assert annotations.readOnlyHint is False, name
         assert annotations.destructiveHint is destructive, name
         assert annotations.idempotentHint is idempotent, name
+
+
+def test_disabled_tools_are_not_registered(monkeypatch):
+    import importlib
+
+    monkeypatch.setenv("DISABLED_TOOLS", " delete_vm, revert_vm_snapshot ,typo_tool")
+    try:
+        reloaded = importlib.reload(server)
+        names = {tool.name for tool in reloaded.mcp._tool_manager.list_tools()}
+        assert "delete_vm" not in names
+        assert "revert_vm_snapshot" not in names
+        assert "list_vms" in names
+        assert reloaded._DISABLED_TOOLS - reloaded._ALL_TOOL_NAMES == {"typo_tool"}
+    finally:
+        monkeypatch.delenv("DISABLED_TOOLS")
+        importlib.reload(server)
